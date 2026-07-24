@@ -24,7 +24,7 @@ per-game switching).
   color individual keys directly with no zone required.
 - **Functions**: bind a physical key to change mode or profile on press and/or
   release, including momentary hold-to-switch lighting.
-- **HSV color wheel** with a brightness slider and up to 32 saved custom colors.
+- **HSV color wheel** with a brightness slider and up to 64 saved custom colors.
 - **Detect from focused window**: a countdown then auto-fills a game's match
   string from whatever window is focused, with an optional sound and a keyboard
   flash finale.
