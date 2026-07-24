@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
         self.func_selected_key: str | None = None  # single-key selection in Functions tab
         self._loading = False  # guard against signal recursion
 
-        self.setWindowTitle(f"RGB Profile Editor: {device_name}")
+        self.setWindowTitle(f"ModeShift Profile Editor: {device_name}")
         self._build_ui()
         self._reload_all()
 
