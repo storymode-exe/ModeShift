@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""
+rgb_game_watcher.py
+
+Background/tray daemon that watches the active window on KDE Plasma (Wayland)
+and applies the matching profile's ACTIVE mode to the keyboard via OpenRGB.
+
+Data model (Profiles -> Modes -> Zones) lives in games.json; edit it with
+profile_editor.py or by hand. See rgb_common.py for the schema.
+
+Tray menu:
+    Pause                     - stop applying colors
+    Auto (detect game)        - follow the focused window -> profile
+    <each profile by name>    - force a specific profile regardless of focus
+    Reload games.json         - re-read the config after editing
+    Quit
+
+Requirements:
+    pip install openrgb-python psutil pystray pillow
+    kdotool on PATH (AUR: kdotool)
+    OpenRGB SDK Server running (OpenRGB -> SDK Server tab -> Start Server)
+
+Run with --list-leds to print every LED name this device reports:
+    python3 rgb_game_watcher.py --list-leds
+"""
+
+import sys
+import threading
+import time
+from pathlib import Path
+
+try:
+    from openrgb import OpenRGBClient  # noqa: F401  (surface import errors early)
+    from PIL import Image, ImageDraw
+    import pystray
+except ImportError as e:
+    print(f"Missing dependency: {e.name}. Install with: "
+          f"pip install openrgb-python psutil pystray pillow", file=sys.stderr)
+    sys.exit(1)
+
+import rgb_common as rc
+
+CONFIG_PATH = rc.CONFIG_PATH
+AUTO = "__auto__"  # follow game detection
+
+
+class Watcher:
+    def __init__(self, config_path: Path):
+        self.config_path = config_path
+        try:
+            self.config = rc.load_config(config_path)
+        except FileNotFoundError:
+            # first run with no config yet: auto-detect creates a default profile
+            self.config = {"openrgb": {"host": "127.0.0.1", "port": 6742},
+                           "poll_interval_seconds": 1.5, "devices": {}, "active_device": None}
+        self.client = None
+        self.device = None
+        self.led_lookup: dict = {}
+        self._stop = threading.Event()
+        self._paused = threading.Event()
+        self._manual = AUTO  # AUTO, or a profile name to force
+        self._last_applied = "__unset__"  # last (profile, mode) signature applied
+        self._apply_lock = threading.Lock()
+        self._active_profile_name = None   # profile currently being displayed
+        self._mode_override = None         # mode forced by a key function (momentary)
+        self._icon = None                  # tray icon, set by main() for live updates
+        # seed with the current command-file mtime so a stale command from a
+        # previous session doesn't fire on startup
+        self._cmd_mtime = self._command_mtime()
+        self._connect()
+
+    def _command_mtime(self) -> float:
+        try:
+            return rc.WATCHER_CMD_PATH.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def reload_config_only(self):
+        """Re-read games.json without reconnecting to OpenRGB (lighter than
+        reload_config; used when the editor tells us to switch profiles)."""
+        try:
+            self.config = rc.load_config(self.config_path)
+        except Exception as e:
+            print(f"[rgb_game_watcher] config reload failed: {e}", file=sys.stderr)
+            return
+        self._last_applied = "__unset__"
+        self._mode_override = None
+
+    def _check_editor_command(self):
+        """If the editor dropped a new command, reload config and switch to the
+        requested profile so the watcher matches what's being edited."""
+        mtime = self._command_mtime()
+        if mtime <= self._cmd_mtime:
+            return
+        self._cmd_mtime = mtime
+        cmd = rc.read_watcher_command()
+        if not cmd:
+            return
+        self.reload_config_only()
+        profile = cmd.get("profile")
+        if profile in (None, rc.WATCHER_CMD_AUTO):
+            self.set_manual(AUTO)
+        else:
+            self.set_manual(profile)
+        print(f"[rgb_game_watcher] editor command: switch to {profile!r}", file=sys.stderr)
+
+    def _connect(self):
+        self.client = rc.open_client(self.config, client_name="game-watcher")
+        self.device, self.device_name = rc.select_device(self.config, self.client)
+        self.led_lookup = rc.build_led_lookup(self.device)
+
+    def _profiles(self) -> dict:
+        """Profiles for the auto-detected active keyboard."""
+        return self.config["devices"][self.device_name]["profiles"]
+
+    def reload_config(self):
+        self.config = rc.load_config(self.config_path)
+        self._connect()
+        self._last_applied = "__unset__"
+        self._mode_override = None
+
+    def profile_names(self) -> list:
+        return list(self._profiles().keys())
+
+    def set_manual(self, value: str):
+        """value: AUTO to follow game detection, or a profile name to force."""
+        self._manual = value
+        self._last_applied = "__unset__"
+        self._mode_override = None
+
+    def apply_profile(self, name: str):
+        profiles = self._profiles()
+        prof = profiles.get(name) or profiles.get(rc.DEFAULT_PROFILE_NAME)
+        if prof is None:
+            return
+
+        # a change of profile clears any momentary mode override
+        if name != self._active_profile_name:
+            self._active_profile_name = name
+            self._mode_override = None
+
+        modes = prof.get("modes", {})
+        override = self._mode_override
+        mode_name = override if override in modes else prof.get("active_mode")
+        mode = modes.get(mode_name) or rc.get_active_mode(prof)
+
+        signature = (name, mode_name)
+        with self._apply_lock:
+            if signature == self._last_applied:
+                return
+            layout = rc.resolve_mode_layout(mode)
+            colors = rc.build_color_array(layout, self.led_lookup, len(self.device.leds))
+            # Set only this device's own LED array -- never "Apply All Devices".
+            self.device.set_colors(colors)
+            self._last_applied = signature
+            self._update_icon(mode, name, mode_name)
+
+    def _update_icon(self, mode, profile_name, mode_name):
+        """Recolor the tray icon to the current mode so mode/profile switches
+        (including key-triggered ones) are visible at a glance."""
+        if self._icon is None:
+            return
+        try:
+            self._icon.icon = make_icon_image(representative_color(mode))
+            self._icon.title = f"RGB Game Watcher: {profile_name} / {mode_name}"
+        except Exception:
+            pass
+
+    # -- key functions (momentary mode / profile switching) --------------
+
+    def handle_key_event(self, key_name: str, pressed: bool):
+        """Called by the key listener thread. Looks up a binding for the key
+        in the currently-active profile and applies its press/release action
+        immediately (not on the next poll tick)."""
+        name = self._active_profile_name
+        if name is None:
+            return
+        prof = self._profiles().get(name)
+        if not prof:
+            return
+        binding = prof.get("functions", {}).get(key_name)
+        if not binding:
+            return
+        event = binding.get("on_press") if pressed else binding.get("on_release")
+        if not event:
+            return
+        if event["action"] == "mode":
+            self._mode_override = event["target"]
+            self._last_applied = "__unset__"
+            self.apply_profile(name)
+        elif event["action"] == "profile":
+            self.set_manual(event["target"])
+            self.apply_profile(event["target"])
+
+    def pause(self):
+        self._paused.set()
+
+    def resume(self):
+        self._paused.clear()
+        self._last_applied = "__unset__"
+
+    def is_paused(self) -> bool:
+        return self._paused.is_set()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.is_set():
+            if not self._paused.is_set():
+                try:
+                    self._check_editor_command()
+                    if self._manual != AUTO:
+                        self.apply_profile(self._manual)
+                    else:
+                        result = rc.get_active_window()
+                        if result is not None:
+                            win_class, pid = result
+                            name = rc.resolve_profile_name(win_class, pid, self._profiles())
+                            self.apply_profile(name)
+                except Exception as e:
+                    print(f"[rgb_game_watcher] error in poll loop: {e}", file=sys.stderr)
+            time.sleep(self.config["poll_interval_seconds"])
+
+    def run_key_listener(self):
+        """Reads raw keyboard input via evdev and dispatches press/release to
+        handle_key_event. Requires python-evdev and read access to /dev/input
+        (add your user to the 'input' group). Fails soft: if unavailable, key
+        functions just don't fire and everything else keeps working."""
+        try:
+            import evdev
+            from evdev import ecodes
+            import selectors
+        except ImportError:
+            print("[rgb_game_watcher] python-evdev not installed; key functions "
+                  "disabled. Install with: pip install evdev", file=sys.stderr)
+            return
+
+        # our key names -> numeric evdev codes -> back, so we can translate
+        # incoming events to the names used in games.json functions
+        code_to_name = {}
+        for key_name in (rc.led_shorthand(l) for l in self.device.leds):
+            ecode_name = rc.key_name_to_ecode_name(key_name)
+            if ecode_name and hasattr(ecodes, ecode_name):
+                code_to_name[getattr(ecodes, ecode_name)] = key_name
+
+        try:
+            paths = evdev.list_devices()
+        except Exception as e:
+            print(f"[rgb_game_watcher] can't list input devices: {e}", file=sys.stderr)
+            return
+
+        keyboards = []
+        for path in paths:
+            try:
+                dev = evdev.InputDevice(path)
+                caps = dev.capabilities()
+                keys = caps.get(ecodes.EV_KEY, [])
+                # a real keyboard reports the letter keys
+                if ecodes.KEY_A in keys and ecodes.KEY_Z in keys:
+                    keyboards.append(dev)
+            except (PermissionError, OSError):
+                continue
+
+        if not keyboards:
+            print("[rgb_game_watcher] no readable keyboard devices found for key "
+                  "functions. Are you in the 'input' group? (sudo usermod -aG "
+                  "input $USER, then log out/in)", file=sys.stderr)
+            return
+
+        print(f"[rgb_game_watcher] key functions active on: "
+              f"{', '.join(d.name for d in keyboards)}", file=sys.stderr)
+
+        selector = selectors.DefaultSelector()
+        for dev in keyboards:
+            selector.register(dev, selectors.EVENT_READ)
+
+        while not self._stop.is_set():
+            for sel_key, _mask in selector.select(timeout=0.5):
+                dev = sel_key.fileobj
+                try:
+                    for event in dev.read():
+                        if event.type != ecodes.EV_KEY or event.value not in (0, 1):
+                            continue  # ignore autorepeat (value 2)
+                        key_name = code_to_name.get(event.code)
+                        if key_name is None:
+                            continue
+                        try:
+                            self.handle_key_event(key_name, pressed=(event.value == 1))
+                        except Exception as e:
+                            print(f"[rgb_game_watcher] key handler error: {e}", file=sys.stderr)
+                except OSError:
+                    continue
+
+
+def _luminance(hex_color: str) -> float:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def representative_color(mode: dict) -> str:
+    """Pick a color that best represents a mode for the tray icon: the base
+    color, unless it's near-black and there are zones, in which case use the
+    brightest zone color so the icon stays visible."""
+    base = mode.get("base_color", "000000")
+    zones = mode.get("zones", [])
+    if _luminance(base) < 30 and zones:
+        best = max(zones, key=lambda z: _luminance(z.get("color", "000000")))
+        return rc.scale_hex(best.get("color", "FFFFFF"), best.get("brightness", 100))
+    return base
+
+
+def make_icon_image(color_hex="2F00FF"):
+    color_hex = color_hex.lstrip("#")
+    rgb = tuple(int(color_hex[i:i + 2], 16) for i in (0, 2, 4))
+    img = Image.new("RGB", (64, 64), rgb)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((0, 0, 63, 63), outline=(128, 128, 128), width=3)
+    return img
+
+
+def build_tray(watcher: Watcher):
+    def on_pause(icon, item):
+        watcher.resume() if watcher.is_paused() else watcher.pause()
+
+    def on_reload(icon, item):
+        try:
+            watcher.reload_config()
+            icon.menu = build_menu()
+            icon.update_menu()
+            print("[rgb_game_watcher] games.json reloaded")
+        except Exception as e:
+            print(f"[rgb_game_watcher] failed to reload config: {e}", file=sys.stderr)
+
+    def on_quit(icon, item):
+        watcher.stop()
+        icon.stop()
+
+    def on_auto(icon, item):
+        watcher.set_manual(AUTO)
+
+    def make_selector(name):
+        def _select(icon, item):
+            watcher.set_manual(name)
+        return _select
+
+    def build_menu():
+        profile_items = [
+            pystray.MenuItem(
+                name, make_selector(name), radio=True,
+                checked=(lambda item, n=name: watcher._manual == n),
+            )
+            for name in watcher.profile_names()
+        ]
+        return pystray.Menu(
+            pystray.MenuItem("Pause", on_pause, checked=lambda item: watcher.is_paused()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Auto (detect game)", on_auto, radio=True,
+                             checked=lambda item: watcher._manual == AUTO),
+            *profile_items,
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Reload games.json", on_reload),
+            pystray.MenuItem("Quit", on_quit),
+        )
+
+    default_prof = watcher._profiles().get(rc.DEFAULT_PROFILE_NAME, {})
+    start_color = representative_color(rc.get_active_mode(default_prof)) if default_prof else "2F00FF"
+    return pystray.Icon("rgb_game_watcher", icon=make_icon_image(start_color),
+                        title=f"RGB Game Watcher: {watcher.device_name}", menu=build_menu())
+
+
+def list_leds(config_path: Path):
+    cfg = rc.load_config(config_path)
+    try:
+        client = rc.open_client(cfg, client_name="game-watcher-list-leds")
+        device, _name = rc.select_device(cfg, client)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+    print(f"Device: {device.name}  ({len(device.leds)} LEDs)\n")
+    print(f"{'idx':>4}  {'full name':<30} shorthand for games.json")
+    for i, led in enumerate(device.leds):
+        print(f"{i:>4}  {led.name:<30} {rc.led_shorthand(led)}")
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    config_path = Path(args[0]) if args else CONFIG_PATH
+
+    if "--list-leds" in sys.argv:
+        list_leds(config_path)
+        return
+
+    # --wait: retry the OpenRGB connection for ~30s. Used by the autostart
+    # entry so a slightly-slower OpenRGB SDK server on login doesn't cause a
+    # hard failure. Interactive runs (no flag) fail fast instead.
+    wait = "--wait" in sys.argv
+    attempts = 15 if wait else 1
+    watcher = None
+    last_err = None
+    for i in range(attempts):
+        try:
+            watcher = Watcher(config_path)
+            break
+        except Exception as e:
+            last_err = e
+            if wait and i < attempts - 1:
+                print(f"[rgb_game_watcher] waiting for OpenRGB... ({e})", file=sys.stderr)
+                time.sleep(2)
+    if watcher is None:
+        print(f"[rgb_game_watcher] startup failed: {last_err}", file=sys.stderr)
+        sys.exit(1)
+
+    worker = threading.Thread(target=watcher.run, daemon=True)
+    worker.start()
+
+    # separate thread listens for physical key presses to drive per-key
+    # Change-Mode / Change-Profile functions (Star Citizen holds, etc.)
+    key_thread = threading.Thread(target=watcher.run_key_listener, daemon=True)
+    key_thread.start()
+
+    icon = build_tray(watcher)
+    watcher._icon = icon  # let apply_profile recolor the tray on mode/profile change
+    icon.run()  # blocks; must run on the main thread
+
+
+if __name__ == "__main__":
+    main()

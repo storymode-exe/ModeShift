@@ -1,0 +1,26 @@
+# --- ModeShift user data (never commit; these are per-user configs) ---
+games.json
+custom_colors.json
+settings.json
+watcher_command.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.log
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Editor / OS cruft ---
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store

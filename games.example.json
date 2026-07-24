@@ -1,0 +1,62 @@
+{
+  "openrgb": {
+    "host": "127.0.0.1",
+    "port": 6742
+  },
+  "poll_interval_seconds": 1.5,
+  "active_device": null,
+  "devices": {
+    "Example Keyboard": {
+      "profiles": {
+        "Default": {
+          "match": "",
+          "active_mode": "Mode 1",
+          "modes": {
+            "Mode 1": {
+              "base_color": "2F00FF",
+              "zones": [
+                {
+                  "name": "WASD",
+                  "keys": ["W", "A", "S", "D"],
+                  "color": "FF4000",
+                  "brightness": 100
+                }
+              ],
+              "keys": {}
+            }
+          },
+          "functions": {}
+        },
+        "My Game": {
+          "match": "mygame-linux-shipping",
+          "active_mode": "Mode 1",
+          "modes": {
+            "Mode 1": {
+              "base_color": "000000",
+              "zones": [
+                {
+                  "name": "Movement",
+                  "keys": ["W", "A", "S", "D"],
+                  "color": "FF3C00",
+                  "brightness": 100
+                }
+              ],
+              "keys": {}
+            },
+            "Mode 2": {
+              "base_color": "FF0000",
+              "zones": [],
+              "keys": {}
+            }
+          },
+          "functions": {
+            "Left Control": {
+              "on_press":   { "action": "mode", "target": "Mode 2" },
+              "on_release": { "action": "mode", "target": "Mode 1" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

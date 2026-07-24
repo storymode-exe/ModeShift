@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ModeShift Watcher
+GenericName=Keyboard Lighting Daemon
+Comment=Background tray app that switches keyboard lighting per focused game
+Exec=python3 /path/to/modeshift/rgb_game_watcher.py --wait
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+StartupNotify=false
