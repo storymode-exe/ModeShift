@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-rgb_game_watcher.py
+modeshift_watcher.py
 
 Background/tray daemon that watches the active window on KDE Plasma (Wayland)
 and applies the matching profile's ACTIVE mode to the keyboard via OpenRGB.
 
 Data model (Profiles -> Modes -> Zones) lives in games.json; edit it with
-profile_editor.py or by hand. See rgb_common.py for the schema.
+modeshift_editor.py or by hand. See modeshift_common.py for the schema.
 
 Tray menu:
     Pause                     - stop applying colors
@@ -21,7 +21,7 @@ Requirements:
     OpenRGB SDK Server running (OpenRGB -> SDK Server tab -> Start Server)
 
 Run with --list-leds to print every LED name this device reports:
-    python3 rgb_game_watcher.py --list-leds
+    python3 modeshift_watcher.py --list-leds
 """
 
 import sys
@@ -38,7 +38,7 @@ except ImportError as e:
           f"pip install openrgb-python psutil pystray pillow", file=sys.stderr)
     sys.exit(1)
 
-import rgb_common as rc
+import modeshift_common as rc
 
 CONFIG_PATH = rc.CONFIG_PATH
 AUTO = "__auto__"  # follow game detection
@@ -81,7 +81,7 @@ class Watcher:
         try:
             self.config = rc.load_config(self.config_path)
         except Exception as e:
-            print(f"[rgb_game_watcher] config reload failed: {e}", file=sys.stderr)
+            print(f"[modeshift_watcher] config reload failed: {e}", file=sys.stderr)
             return
         self._last_applied = "__unset__"
         self._mode_override = None
@@ -102,7 +102,7 @@ class Watcher:
             self.set_manual(AUTO)
         else:
             self.set_manual(profile)
-        print(f"[rgb_game_watcher] editor command: switch to {profile!r}", file=sys.stderr)
+        print(f"[modeshift_watcher] editor command: switch to {profile!r}", file=sys.stderr)
 
     def _connect(self):
         self.client = rc.open_client(self.config, client_name="game-watcher")
@@ -219,7 +219,7 @@ class Watcher:
                             name = rc.resolve_profile_name(win_class, pid, self._profiles())
                             self.apply_profile(name)
                 except Exception as e:
-                    print(f"[rgb_game_watcher] error in poll loop: {e}", file=sys.stderr)
+                    print(f"[modeshift_watcher] error in poll loop: {e}", file=sys.stderr)
             time.sleep(self.config["poll_interval_seconds"])
 
     def run_key_listener(self):
@@ -232,7 +232,7 @@ class Watcher:
             from evdev import ecodes
             import selectors
         except ImportError:
-            print("[rgb_game_watcher] python-evdev not installed; key functions "
+            print("[modeshift_watcher] python-evdev not installed; key functions "
                   "disabled. Install with: pip install evdev", file=sys.stderr)
             return
 
@@ -247,7 +247,7 @@ class Watcher:
         try:
             paths = evdev.list_devices()
         except Exception as e:
-            print(f"[rgb_game_watcher] can't list input devices: {e}", file=sys.stderr)
+            print(f"[modeshift_watcher] can't list input devices: {e}", file=sys.stderr)
             return
 
         keyboards = []
@@ -263,12 +263,12 @@ class Watcher:
                 continue
 
         if not keyboards:
-            print("[rgb_game_watcher] no readable keyboard devices found for key "
+            print("[modeshift_watcher] no readable keyboard devices found for key "
                   "functions. Are you in the 'input' group? (sudo usermod -aG "
                   "input $USER, then log out/in)", file=sys.stderr)
             return
 
-        print(f"[rgb_game_watcher] key functions active on: "
+        print(f"[modeshift_watcher] key functions active on: "
               f"{', '.join(d.name for d in keyboards)}", file=sys.stderr)
 
         selector = selectors.DefaultSelector()
@@ -288,7 +288,7 @@ class Watcher:
                         try:
                             self.handle_key_event(key_name, pressed=(event.value == 1))
                         except Exception as e:
-                            print(f"[rgb_game_watcher] key handler error: {e}", file=sys.stderr)
+                            print(f"[modeshift_watcher] key handler error: {e}", file=sys.stderr)
                 except OSError:
                     continue
 
@@ -329,9 +329,9 @@ def build_tray(watcher: Watcher):
             watcher.reload_config()
             icon.menu = build_menu()
             icon.update_menu()
-            print("[rgb_game_watcher] games.json reloaded")
+            print("[modeshift_watcher] games.json reloaded")
         except Exception as e:
-            print(f"[rgb_game_watcher] failed to reload config: {e}", file=sys.stderr)
+            print(f"[modeshift_watcher] failed to reload config: {e}", file=sys.stderr)
 
     def on_quit(icon, item):
         watcher.stop()
@@ -366,7 +366,7 @@ def build_tray(watcher: Watcher):
 
     default_prof = watcher._profiles().get(rc.DEFAULT_PROFILE_NAME, {})
     start_color = representative_color(rc.get_active_mode(default_prof)) if default_prof else "2F00FF"
-    return pystray.Icon("rgb_game_watcher", icon=make_icon_image(start_color),
+    return pystray.Icon("modeshift_watcher", icon=make_icon_image(start_color),
                         title=f"RGB Game Watcher: {watcher.device_name}", menu=build_menu())
 
 
@@ -406,10 +406,10 @@ def main():
         except Exception as e:
             last_err = e
             if wait and i < attempts - 1:
-                print(f"[rgb_game_watcher] waiting for OpenRGB... ({e})", file=sys.stderr)
+                print(f"[modeshift_watcher] waiting for OpenRGB... ({e})", file=sys.stderr)
                 time.sleep(2)
     if watcher is None:
-        print(f"[rgb_game_watcher] startup failed: {last_err}", file=sys.stderr)
+        print(f"[modeshift_watcher] startup failed: {last_err}", file=sys.stderr)
         sys.exit(1)
 
     worker = threading.Thread(target=watcher.run, daemon=True)

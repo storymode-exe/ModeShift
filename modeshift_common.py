@@ -1,8 +1,8 @@
 """
-rgb_common.py
+modeshift_common.py
 
-Shared config/OpenRGB logic used by both rgb_game_watcher.py (the
-background/tray automation daemon) and profile_editor.py (the GUI).
+Shared config/OpenRGB logic used by both modeshift_watcher.py (the
+background/tray automation daemon) and modeshift_editor.py (the GUI).
 
 DATA MODEL (games.json)
 -----------------------
@@ -495,7 +495,7 @@ def build_color_array(layout: dict, led_lookup: dict, num_leds: int) -> list:
             continue
         idx = led_lookup.get(key_name.lower())
         if idx is None:
-            print(f"[rgb_common] warning: no LED named {key_name!r} on this device",
+            print(f"[modeshift_common] warning: no LED named {key_name!r} on this device",
                   file=sys.stderr)
             continue
         colors[idx] = hex_to_rgbcolor(hex_color)

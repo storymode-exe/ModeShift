@@ -32,4 +32,4 @@ echo
 echo "The watcher will now start automatically on next login."
 echo "Both apps should appear in your application menu (search 'ModeShift')."
 echo "To start the watcher right now without rebooting:"
-echo "  python3 \"$DIR/rgb_game_watcher.py\" &"
+echo "  python3 \"$DIR/modeshift_watcher.py\" &"

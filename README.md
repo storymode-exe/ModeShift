@@ -36,13 +36,13 @@ per-game switching).
 
 ModeShift is two programs sharing one config file (`games.json`):
 
-- `profile_editor.py` is the GUI. You edit profiles, modes, zones, and per-key
+- `modeshift_editor.py` is the GUI. You edit profiles, modes, zones, and per-key
   colors, and bind functions.
-- `rgb_game_watcher.py` is the background tray daemon. It watches the focused
+- `modeshift_watcher.py` is the background tray daemon. It watches the focused
   window and applies the right profile, or whatever you pick from the tray. This
   is what actually lights the keyboard.
 
-`rgb_common.py` holds the shared logic. `diagnose_zones.py` is a one-off helper
+`modeshift_common.py` holds the shared logic. `diagnose_zones.py` is a one-off helper
 that dumps your keyboard's zone/matrix data.
 
 ## Requirements
@@ -107,13 +107,13 @@ cp games.example.json games.json
 Edit lighting:
 
 ```bash
-python3 profile_editor.py
+python3 modeshift_editor.py
 ```
 
 Run the daemon:
 
 ```bash
-python3 rgb_game_watcher.py
+python3 modeshift_watcher.py
 ```
 
 A tray icon appears. Right-click to pause, choose Auto (detect game), force a
@@ -122,7 +122,7 @@ specific profile, reload after editing, or quit.
 List your keyboard's exact key names:
 
 ```bash
-python3 rgb_game_watcher.py --list-leds
+python3 modeshift_watcher.py --list-leds
 ```
 
 Install the app-menu entries and log-in autostart (rewrites the paths to wherever

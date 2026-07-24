@@ -22,7 +22,7 @@ CONFIG_PATH = Path(__file__).parent / "games.json"
 
 
 def main():
-    import rgb_common as rc
+    import modeshift_common as rc
     try:
         cfg = rc.load_config()
     except FileNotFoundError:

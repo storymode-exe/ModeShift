@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-profile_editor.py
+modeshift_editor.py
 
 OpenRGB-style GUI for editing games.json (Profiles -> Modes -> Zones).
 
@@ -22,7 +22,7 @@ of zones over a base color. A Profile is a set of modes plus a window-match
 string. The watcher applies a profile's ACTIVE mode.
 
 Requirements: pip install PySide6
-Run:          python3 profile_editor.py
+Run:          python3 modeshift_editor.py
 """
 
 import colorsys
@@ -50,7 +50,7 @@ except ImportError:
     print("Missing dependency: PySide6. Install with: pip install PySide6", file=sys.stderr)
     sys.exit(1)
 
-import rgb_common as rc
+import modeshift_common as rc
 
 APP_NAME = "ModeShift"
 APP_VERSION = "1.0.0"
@@ -58,7 +58,7 @@ APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
 
-WATCHER_SCRIPT = Path(__file__).parent / "rgb_game_watcher.py"
+WATCHER_SCRIPT = Path(__file__).parent / "modeshift_watcher.py"
 
 CUSTOM_COLORS_PATH = rc.CONFIG_PATH.parent / "custom_colors.json"
 SETTINGS_PATH = rc.CONFIG_PATH.parent / "settings.json"
