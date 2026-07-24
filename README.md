@@ -89,8 +89,9 @@ sudo dnf install openrgb python3-pyside6
 # kdotool: build from source or grab a release (needed only on KDE Wayland)
 ```
 
-For key functions (press/release mode/profile switching), the watcher reads raw
-keyboard input, which needs your user in the `input` group:
+### Key functions setup (all distros)
+
+This step is **not** distro-specific. Everyone who wants the hold-to-switch key functions (change mode or profile on a keypress) must do it, no matter the distro. The watcher reads raw keyboard input, which requires your user to be in the `input` group:
 
 ```bash
 sudo usermod -aG input $USER      # then log out and back in
