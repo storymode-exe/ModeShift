@@ -4,7 +4,7 @@
 
 ModeShift gives your OpenRGB-controllable keyboard per-key lighting profiles that
 switch automatically when you change games, plus modes you can flip through and
-hold-to-switch key bindings. Think of it as a CKB-style / OpenRGB-style lighting
+hold-to-switch key bindings. Think of it as an OpenRGB-style lighting profile
 manager focused on gaming, built for Linux desktops (developed on KDE Plasma
 Wayland).
 
