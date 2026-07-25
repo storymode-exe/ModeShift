@@ -12,6 +12,8 @@ It is not a replacement for OpenRGB. OpenRGB does the hardware talking; ModeShif
 sits on top of it and manages the lighting logic (profiles, modes, zones,
 per-game switching).
 
+![ModeShift switching keyboard lighting per game](docs/modeshift_BG3.gif)
+
 ## Features
 
 - **Per-key lighting** on a live picture of your actual keyboard, drawn from
