@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/d59fe3e0-d4f1-4e25-af7e-bf12bf77eff5
+
 # ModeShift
 
 **RGB lighting profiles for OpenRGB keyboards on Linux.**
