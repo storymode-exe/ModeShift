@@ -98,7 +98,7 @@ System packages by distro:
 
 ```bash
 sudo pacman -S openrgb python-pyside6
-yay -S kdotool          # AUR; for active-window detection on KDE Wayland
+paru -S kdotool   # or yay; kdotool is in the AUR, for KDE Wayland window detection
 ```
 
 **Debian / Ubuntu / Pop!_OS**
