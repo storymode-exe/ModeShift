@@ -18,6 +18,7 @@ per-game switching).
 
 ## Features
 
+- **Per-zone lighting effects**: type lighting, breathing, blinking, color cycle, and twinkle, each with its own colors (up to 8), layered per zone.
 - **Per-key lighting** on a live picture of your actual keyboard, drawn from
   OpenRGB's own layout data (so it works on many OpenRGB keyboards, not just one).
 - **Profiles** tied to games. The watcher detects the focused window and applies

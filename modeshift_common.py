@@ -127,6 +127,47 @@ def _migrate_flat_schema(cfg: dict) -> dict:
     return cfg
 
 
+_EFFECT_TYPES = ("reactive", "breathing", "blinking", "colorcycle", "twinkle")
+_DEFAULT_EFFECT_COLOR = {"reactive": "FF3300", "breathing": "2F00FF",
+                        "blinking": "FF0000", "twinkle": "FFFFFF"}
+
+
+def _normalize_effect(eff):
+    """Validate/fill a zone's effect dict, or None if there isn't a valid one.
+    Every effect now uses a unified 'colors' list (1-8); a legacy single
+    'color' is migrated into it. colorcycle may have an empty list (rainbow)."""
+    if not isinstance(eff, dict):
+        return None
+    t = eff.get("type")
+    if t not in _EFFECT_TYPES:
+        return None
+    cols = [c for c in eff.get("colors", []) if isinstance(c, str)]
+    if not cols and isinstance(eff.get("color"), str):   # migrate old single color
+        cols = [eff["color"]]
+    cols = cols[:8]
+    if not cols and t != "colorcycle":
+        cols = [_DEFAULT_EFFECT_COLOR[t]]
+    out = {"type": t, "colors": cols}
+    if t == "reactive":
+        out.update({"peak_brightness": int(eff.get("peak_brightness", 100)),
+                    "fade_seconds": float(eff.get("fade_seconds", 0.6))})
+    elif t == "breathing":
+        out.update({"period_seconds": float(eff.get("period_seconds", 3.0)),
+                    "min_brightness": int(eff.get("min_brightness", 0)),
+                    "max_brightness": int(eff.get("max_brightness", 100))})
+    elif t == "blinking":
+        out.update({"on_seconds": float(eff.get("on_seconds", 0.4)),
+                    "off_seconds": float(eff.get("off_seconds", 0.4))})
+    elif t == "colorcycle":
+        out.update({"rainbow": bool(eff.get("rainbow", True)),
+                    "period_seconds": float(eff.get("period_seconds", 5.0))})
+    elif t == "twinkle":
+        out.update({"rainbow": bool(eff.get("rainbow", False)),
+                    "density": float(eff.get("density", 0.3)),
+                    "fade_seconds": float(eff.get("fade_seconds", 1.0))})
+    return out
+
+
 def _normalize_mode(mode: dict) -> dict:
     mode = _clean(mode)
     mode.setdefault("base_color", "000000")
@@ -134,17 +175,56 @@ def _normalize_mode(mode: dict) -> dict:
     for z in mode.get("zones", []) or []:
         if not isinstance(z, dict):
             continue
-        clean_zones.append({
+        cz = {
             "name": z.get("name", "Zone"),
             "keys": list(z.get("keys", [])),
             "color": z.get("color", "FFFFFF"),
             "brightness": int(z.get("brightness", 100)),
-        })
+        }
+        if isinstance(z.get("effect"), dict):
+            cz["effect"] = z["effect"]          # normalized below
+        if z.get("reactive"):
+            cz["_legacy_reactive"] = True       # carried only for migration
+        clean_zones.append(cz)
+
+    # migrate legacy mode-level reactive block -> per-zone reactive effects
+    legacy = mode.get("reactive")
+    if isinstance(legacy, dict) and legacy.get("enabled"):
+        params = {
+            "type": "reactive",
+            "colors": [c for c in legacy.get("colors", []) if isinstance(c, str)] or ["FF3300"],
+            "peak_brightness": int(legacy.get("peak_brightness", 100)),
+            "fade_seconds": float(legacy.get("fade_seconds", 0.6)),
+            "alternate": bool(legacy.get("alternate", False)),
+        }
+        scope = legacy.get("scope", "zones")
+        for cz in clean_zones:
+            if "effect" not in cz and (scope == "all" or cz.get("_legacy_reactive")):
+                cz["effect"] = dict(params)
+    mode.pop("reactive", None)
+
+    for cz in clean_zones:
+        cz.pop("_legacy_reactive", None)
+        eff = _normalize_effect(cz.get("effect"))
+        if eff:
+            cz["effect"] = eff
+        else:
+            cz.pop("effect", None)
     mode["zones"] = clean_zones
+
     # loose per-key colors (set directly, not via a zone). key name -> hex.
     keys = mode.get("keys", {}) or {}
     mode["keys"] = {k: v for k, v in keys.items() if isinstance(v, str)}
     return mode
+
+
+def mode_has_effects(mode: dict) -> bool:
+    """True if any zone in the mode carries an animated effect."""
+    for z in mode.get("zones", []):
+        e = z.get("effect")
+        if isinstance(e, dict) and e.get("type") not in (None, "none"):
+            return True
+    return False
 
 
 def _normalize_binding(b):
@@ -353,8 +433,13 @@ def resolve_mode_layout(mode: dict) -> dict:
     """Flatten a mode into {_default, key_name: hex}. Precedence (later wins):
     base color -> zones -> loose per-key colors."""
     layout = {"_default": mode.get("base_color", "000000")}
-    for zone in mode.get("zones", []):
-        color = scale_hex(zone.get("color", "FFFFFF"), zone.get("brightness", 100))
+    # Zones are a layer stack: the FIRST zone in the list is the TOP layer and
+    # wins where zones overlap, so paint from the bottom of the stack upward.
+    for zone in reversed(mode.get("zones", [])):
+        raw = zone.get("color", "")
+        if not raw:
+            continue  # transparent zone: no static fill, only its effect shows
+        color = scale_hex(raw, zone.get("brightness", 100))
         for key in zone.get("keys", []):
             layout[key] = color
     # loose per-key colors are the most specific -> applied last

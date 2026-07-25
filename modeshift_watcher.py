@@ -39,6 +39,7 @@ except ImportError as e:
     sys.exit(1)
 
 import modeshift_common as rc
+import modeshift_effects as fx
 
 CONFIG_PATH = rc.CONFIG_PATH
 AUTO = "__auto__"  # follow game detection
@@ -56,6 +57,7 @@ class Watcher:
         self.client = None
         self.device = None
         self.led_lookup: dict = {}
+        self._reactive = None              # fx.ReactiveEngine, created on connect
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._manual = AUTO  # AUTO, or a profile name to force
@@ -105,9 +107,12 @@ class Watcher:
         print(f"[modeshift_watcher] editor command: switch to {profile!r}", file=sys.stderr)
 
     def _connect(self):
+        if self._reactive is not None:
+            self._reactive.stop()
         self.client = rc.open_client(self.config, client_name="game-watcher")
         self.device, self.device_name = rc.select_device(self.config, self.client)
         self.led_lookup = rc.build_led_lookup(self.device)
+        self._reactive = fx.EffectEngine(self.device, self.led_lookup)
 
     def _profiles(self) -> dict:
         """Profiles for the auto-detected active keyboard."""
@@ -151,7 +156,16 @@ class Watcher:
             layout = rc.resolve_mode_layout(mode)
             colors = rc.build_color_array(layout, self.led_lookup, len(self.device.leds))
             # Set only this device's own LED array -- never "Apply All Devices".
-            self.device.set_colors(colors)
+            if rc.mode_has_effects(mode) and self._reactive is not None:
+                # The engine owns the board while any zone has an effect: it
+                # composites this static layout with each zone's effect and
+                # pushes frames itself.
+                self._reactive.configure(colors, mode)
+                self._reactive.start()
+            else:
+                if self._reactive is not None:
+                    self._reactive.stop()
+                self.device.set_colors(colors)
             self._last_applied = signature
             self._update_icon(mode, name, mode_name)
 
@@ -194,6 +208,8 @@ class Watcher:
 
     def pause(self):
         self._paused.set()
+        if self._reactive is not None:
+            self._reactive.stop()   # stop driving the board while paused
 
     def resume(self):
         self._paused.clear()
@@ -204,6 +220,8 @@ class Watcher:
 
     def stop(self):
         self._stop.set()
+        if self._reactive is not None:
+            self._reactive.stop()
 
     def run(self):
         while not self._stop.is_set():
@@ -285,8 +303,11 @@ class Watcher:
                         key_name = code_to_name.get(event.code)
                         if key_name is None:
                             continue
+                        pressed = (event.value == 1)
+                        if pressed and self._reactive is not None:
+                            self._reactive.feed_key(self.led_lookup.get(key_name.lower()))
                         try:
-                            self.handle_key_event(key_name, pressed=(event.value == 1))
+                            self.handle_key_event(key_name, pressed=pressed)
                         except Exception as e:
                             print(f"[modeshift_watcher] key handler error: {e}", file=sys.stderr)
                 except OSError:
@@ -304,7 +325,7 @@ def representative_color(mode: dict) -> str:
     color, unless it's near-black and there are zones, in which case use the
     brightest zone color so the icon stays visible."""
     base = mode.get("base_color", "000000")
-    zones = mode.get("zones", [])
+    zones = [z for z in mode.get("zones", []) if z.get("color")]  # skip transparent
     if _luminance(base) < 30 and zones:
         best = max(zones, key=lambda z: _luminance(z.get("color", "000000")))
         return rc.scale_hex(best.get("color", "FFFFFF"), best.get("brightness", 100))

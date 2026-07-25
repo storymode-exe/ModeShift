@@ -37,7 +37,7 @@ try:
     from PySide6.QtCore import Qt, QRect, QRectF, QSize, QPointF, QUrl, QTimer
     from PySide6.QtGui import (
         QColor, QPainter, QConicalGradient, QLinearGradient, QBrush, QPen,
-        QDesktopServices,
+        QDesktopServices, QPixmap, QIcon,
     )
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QGridLayout, QVBoxLayout,
@@ -51,9 +51,10 @@ except ImportError:
     sys.exit(1)
 
 import modeshift_common as rc
+import modeshift_effects as fx
 
 APP_NAME = "ModeShift"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
@@ -123,7 +124,8 @@ def _contrast_text(hex_color: str) -> str:
 # uses the border to indicate state/assignment.
 _BORDER_STYLES = {
     None: "1px solid #333",
-    "selected": "3px solid #FFD700",   # yellow: currently selected
+    "selected": "3px solid #FFD700",   # yellow: currently selected (free)
+    "zone": "3px solid #2ECC40",       # green: key belongs to the selected zone
     "mode": "3px solid #2ECC40",       # green: has a Change-Mode function
     "profile": "3px solid #FF4136",    # red: has a Change-Profile function
 }
@@ -377,6 +379,7 @@ class MainWindow(QMainWindow):
         self.device_name = device_name
         self.config_path = config_path
         self.led_lookup = rc.build_led_lookup(device)
+        self._preview = fx.EffectEngine(device, self.led_lookup)  # animates effects in live preview
         self.zone = rc.find_matrix_zone(device)
         if self.zone is None:
             raise RuntimeError(f"Device '{device.name}' has no matrix zone to draw.")
@@ -391,7 +394,7 @@ class MainWindow(QMainWindow):
         self.func_selected_key: str | None = None  # single-key selection in Functions tab
         self._loading = False  # guard against signal recursion
 
-        self.setWindowTitle(f"ModeShift Profile Editor: {device_name}")
+        self.setWindowTitle(f"{APP_NAME} Profile Editor: {device_name}")
         self._build_ui()
         self._reload_all()
 
@@ -493,6 +496,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self._hline())
         self.live_check = QCheckBox("Live preview on keyboard")
         self.live_check.setChecked(True)
+        self.live_check.toggled.connect(self._on_live_toggled)
         v.addWidget(self.live_check)
 
         apply_btn = QPushButton("Apply Now")
@@ -545,7 +549,19 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidget(container)
         scroll.setWidgetResizable(True)
-        return scroll
+
+        wrap = QWidget()
+        wl = QVBoxLayout(wrap)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.addWidget(scroll)
+        legend = QLabel(
+            "Left-click: select key  ·  Ctrl-click: add / remove  ·  drag: box-select  "
+            "·  Ctrl-drag: add box     "
+            "<span style='color:#FFD700'>■</span> selected   "
+            "<span style='color:#2ECC40'>■</span> editing zone")
+        legend.setStyleSheet("color:#999; font-size:11px; padding:3px 6px;")
+        wl.addWidget(legend)
+        return wrap
 
     def sized_for_keyboard(self):
         """Return a (width, height) that shows the whole keyboard without
@@ -596,11 +612,92 @@ class MainWindow(QMainWindow):
         row2.addWidget(del_btn)
         v.addLayout(row2)
 
+        # layer reorder: the top of the list is the top layer (wins on overlap)
+        row3 = QHBoxLayout()
+        self.zone_up_btn = QPushButton("▲ Move up (higher layer)")
+        self.zone_up_btn.clicked.connect(lambda: self._on_zone_move(-1))
+        row3.addWidget(self.zone_up_btn)
+        self.zone_down_btn = QPushButton("▼ Move down")
+        self.zone_down_btn.clicked.connect(lambda: self._on_zone_move(1))
+        row3.addWidget(self.zone_down_btn)
+        v.addLayout(row3)
+
         reset_btn = QPushButton("Reset selected keys to base color")
         reset_btn.setToolTip("Remove direct colors from the selected keys "
                              "(they fall back to their zone or the base color).")
         reset_btn.clicked.connect(self._on_reset_keys)
         v.addWidget(reset_btn)
+
+        # --- per-zone effect: pick a type, then its options appear ---
+        eff = QGroupBox("Effect (selected zone)")
+        ev = QVBoxLayout(eff)
+
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Effect:"))
+        self.effect_combo = QComboBox()
+        for label, val in [("None", None), ("Type lighting (reactive)", "reactive"),
+                           ("Breathing", "breathing"), ("Blinking", "blinking"),
+                           ("Color cycle", "colorcycle"), ("Twinkle", "twinkle")]:
+            self.effect_combo.addItem(label, val)
+        self.effect_combo.currentIndexChanged.connect(self._on_effect_type_changed)
+        trow.addWidget(self.effect_combo, 1)
+        ev.addLayout(trow)
+
+        self._eff_panels = {}
+        hint = ("<i>Click a swatch to change it, right-click to remove. "
+                "Add up to 8 colors; multiples cycle automatically.</i>")
+
+        # reactive: colors cycled per keypress, fade, peak
+        p, pv = self._eff_panel()
+        self.rx_colors_row = self._mk_colors_control(pv)
+        r = QHBoxLayout()
+        r.addWidget(QLabel("Fade:")); self.rx_fade = self._mk_spin(50, 5000, " ms", 50); r.addWidget(self.rx_fade)
+        r.addWidget(QLabel("Peak:")); self.rx_peak = self._mk_spin(0, 100, " %", 5); r.addWidget(self.rx_peak)
+        pv.addLayout(r)
+        pv.addWidget(QLabel(hint))
+        self._eff_panels["reactive"] = p; ev.addWidget(p)
+
+        # breathing: colors (cycle per breath), speed, min/max brightness
+        p, pv = self._eff_panel()
+        self.br_colors_row = self._mk_colors_control(pv)
+        r = QHBoxLayout(); r.addWidget(QLabel("Speed:")); self.br_period = self._mk_spin(300, 10000, " ms", 100); r.addWidget(self.br_period); pv.addLayout(r)
+        r = QHBoxLayout(); r.addWidget(QLabel("Min:")); self.br_min = self._mk_spin(0, 100, " %", 5); r.addWidget(self.br_min)
+        r.addWidget(QLabel("Max:")); self.br_max = self._mk_spin(0, 100, " %", 5); r.addWidget(self.br_max); pv.addLayout(r)
+        pv.addWidget(QLabel(hint))
+        self._eff_panels["breathing"] = p; ev.addWidget(p)
+
+        # blinking: colors (cycle per blink), on/off timing
+        p, pv = self._eff_panel()
+        self.bl_colors_row = self._mk_colors_control(pv)
+        r = QHBoxLayout(); r.addWidget(QLabel("On:")); self.bl_on = self._mk_spin(50, 5000, " ms", 50); r.addWidget(self.bl_on)
+        r.addWidget(QLabel("Off:")); self.bl_off = self._mk_spin(50, 5000, " ms", 50); r.addWidget(self.bl_off); pv.addLayout(r)
+        pv.addWidget(QLabel(hint))
+        self._eff_panels["blinking"] = p; ev.addWidget(p)
+
+        # colorcycle: rainbow or custom stops, speed
+        p, pv = self._eff_panel()
+        self.cc_rainbow = QCheckBox("Rainbow (full spectrum)")
+        self.cc_rainbow.stateChanged.connect(self._on_eff_param); pv.addWidget(self.cc_rainbow)
+        r = QHBoxLayout(); r.addWidget(QLabel("Speed:")); self.cc_period = self._mk_spin(500, 20000, " ms", 100); r.addWidget(self.cc_period); pv.addLayout(r)
+        self.cc_stops_row = self._mk_colors_control(pv)
+        pv.addWidget(QLabel("<i>Click a swatch to change it, right-click to remove. "
+                            "Colors used only when Rainbow is off.</i>"))
+        self._eff_panels["colorcycle"] = p; ev.addWidget(p)
+
+        # twinkle: colors (or random), density, fade
+        p, pv = self._eff_panel()
+        self.tw_colors_row = self._mk_colors_control(pv)
+        self.tw_rainbow = QCheckBox("Random rainbow colors")
+        self.tw_rainbow.stateChanged.connect(self._on_eff_param); pv.addWidget(self.tw_rainbow)
+        r = QHBoxLayout(); r.addWidget(QLabel("Density:")); self.tw_density = self._mk_spin(0, 100, " %", 5); r.addWidget(self.tw_density)
+        r.addWidget(QLabel("Fade:")); self.tw_fade = self._mk_spin(100, 5000, " ms", 50); r.addWidget(self.tw_fade); pv.addLayout(r)
+        pv.addWidget(QLabel(hint))
+        self._eff_panels["twinkle"] = p; ev.addWidget(p)
+
+        ev.addWidget(QLabel(
+            "<i>Each zone has its own effect and colors. Select the whole board as "
+            "one zone for a full-keyboard effect.</i>"))
+        v.addWidget(eff)
 
         self.selection_label = QLabel("0 keys selected")
         v.addWidget(self.selection_label)
@@ -811,9 +908,9 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(inner)
         text = QLabel(
             "<h3>Quick start</h3>"
-            "<b>1. Color your keys.</b> Click a key (or drag a box over several) and pick "
-            "a color, it applies right away. No zone needed. Use <i>Set as mode BASE "
-            "color</i> for the whole board.<br><br>"
+            "<b>1. Color your keys.</b> Click a key (or drag a box over several), pick a "
+            "color on the wheel, then hit <i>Apply color</i>. No zone needed. Use "
+            "<i>Set as mode BASE color</i> for the whole board.<br><br>"
             "<b>2. Zones (optional).</b> Select keys and hit <i>New zone from selection</i> "
             "to name a group you can recolor or dim all at once.<br><br>"
             "<b>3. Profiles &amp; games.</b> Make a profile per game with <i>New</i>, then set "
@@ -884,7 +981,7 @@ class MainWindow(QMainWindow):
             s = QPushButton()
             s.setFixedSize(24, 24)
             s.setStyleSheet(f"background-color: #{hexc}; border: 1px solid #555;")
-            s.clicked.connect(lambda _c=False, h=hexc: self._set_picker_hex(h, apply=True))
+            s.clicked.connect(lambda _c=False, h=hexc: self._set_picker_hex(h, apply=False))
             swatch_row.addWidget(s)
         v.addLayout(swatch_row)
 
@@ -905,6 +1002,14 @@ class MainWindow(QMainWindow):
         self.hex_field.editingFinished.connect(self._on_hex_changed)
         hex_row.addWidget(self.hex_field)
         v.addLayout(hex_row)
+
+        # no-color / transparent for the selected zone (clears its static color)
+        self.zone_transp_btn = QPushButton("⊘  No color (transparent, effect only)")
+        self.zone_transp_btn.setToolTip("Clear the selected zone's static color so "
+                                        "nothing shows except its type-lighting. Ideal "
+                                        "for a whole-keyboard type-lighting layer.")
+        self.zone_transp_btn.clicked.connect(self._on_zone_transparent)
+        v.addWidget(self.zone_transp_btn)
 
         # saved custom colors
         saved_header = QHBoxLayout()
@@ -939,6 +1044,11 @@ class MainWindow(QMainWindow):
         v.addLayout(bright_row)
 
         v.addWidget(self._hline())
+        apply_btn = QPushButton("Apply color to zone / keys")
+        apply_btn.setToolTip("Paint the color above onto the selected zone, or "
+                             "onto the selected keys if no zone is active.")
+        apply_btn.clicked.connect(self._apply_picker_to_zone)
+        v.addWidget(apply_btn)
         base_btn = QPushButton("Set as mode BASE color")
         base_btn.clicked.connect(self._on_set_base_color)
         v.addWidget(base_btn)
@@ -983,7 +1093,7 @@ class MainWindow(QMainWindow):
     def _on_custom_left(self, index):
         hexc = self.custom_colors[index]
         if hexc:  # filled -> use it
-            self._set_picker_hex(hexc, apply=True)
+            self._set_picker_hex(hexc, apply=False)
         else:     # empty -> save current picker color here
             self.custom_colors[index] = self._picker_hex()
             self.custom_buttons[index].set_hex(self.custom_colors[index])
@@ -1007,6 +1117,10 @@ class MainWindow(QMainWindow):
         self.bright_slider.setEnabled(on)
         self.bright_title.setText("Brightness (selected zone)" if on
                                   else "Brightness (select a zone)")
+        for attr in ("effect_combo", "zone_up_btn", "zone_down_btn", "zone_transp_btn"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setEnabled(on)
 
     def _hline(self):
         line = QFrame()
@@ -1060,12 +1174,15 @@ class MainWindow(QMainWindow):
         self._loading = True
         self.zone_list.clear()
         for z in self._zones():
-            self.zone_list.addItem(f"{z['name']}  ({len(z['keys'])} keys, {z['brightness']}%)")
+            item = QListWidgetItem(self._zone_item_text(z))
+            item.setIcon(self._swatch_icon(z))
+            self.zone_list.addItem(item)
         self.active_zone_idx = None
         self._loading = False
         self._render_keyboard()
         self._update_selection_label()
         self._update_brightness_enabled()
+        self._sync_effect_controls()
 
     def _render_keyboard(self):
         layout = rc.resolve_mode_layout(self._mode())
@@ -1078,7 +1195,11 @@ class MainWindow(QMainWindow):
                 else:
                     tile.set_border(self._key_function_kind(key_name))
             else:
-                tile.set_border("selected" if key_name in self.selected_keys else None)
+                if key_name in self.selected_keys:
+                    # green while editing a zone's members, yellow for a free selection
+                    tile.set_border("zone" if self.active_zone_idx is not None else "selected")
+                else:
+                    tile.set_border(None)
 
     def _update_selection_label(self):
         self.selection_label.setText(f"{len(self.selected_keys)} keys selected")
@@ -1391,26 +1512,45 @@ class MainWindow(QMainWindow):
             self._load_func_editor()
             self._render_keyboard()
             return
-        # Color Zones tab: toggle multi-selection.
-        if tile.key_name in self.selected_keys:
-            self.selected_keys.discard(tile.key_name)
+        # Color Zones tab. Ctrl-click toggles a key (add/remove); a plain click
+        # starts a fresh single-key selection and drops any active zone.
+        ctrl = bool(QApplication.keyboardModifiers() & Qt.ControlModifier)
+        if ctrl:
+            if tile.key_name in self.selected_keys:
+                self.selected_keys.discard(tile.key_name)
+            else:
+                self.selected_keys.add(tile.key_name)
+            # if a zone is selected, Ctrl-click edits that zone's keys live
+            self._sync_zone_keys_if_editing()
         else:
-            self.selected_keys.add(tile.key_name)
-        # manual selection detaches from any active zone
-        self.active_zone_idx = None
-        self.zone_list.setCurrentRow(-1)
-        tile.set_border("selected" if tile.key_name in self.selected_keys else None)
+            self.selected_keys = {tile.key_name}
+            self.active_zone_idx = None
+            self.zone_list.setCurrentRow(-1)
+        self._render_keyboard()
         self._update_selection_label()
         self._update_brightness_enabled()
+
+    def _sync_zone_keys_if_editing(self):
+        """When a zone is selected, keep its key list equal to the current
+        selection (so Ctrl-click add/remove edits the zone in place)."""
+        if self.active_zone_idx is not None:
+            self._zones()[self.active_zone_idx]["keys"] = sorted(self.selected_keys)
+            self._refresh_zone_row(self.active_zone_idx)
+            self._apply_live()
 
     def _on_box_select(self, names):
         """Rubber-band drag: add every key in the box to the selection.
         Only meaningful in the Color Zones tab (Functions is single-key)."""
         if self.edit_mode in ("functions", "about") or not names:
             return
-        self.selected_keys.update(names)
-        self.active_zone_idx = None
-        self.zone_list.setCurrentRow(-1)
+        ctrl = bool(QApplication.keyboardModifiers() & Qt.ControlModifier)
+        if ctrl:
+            self.selected_keys.update(names)
+            self._sync_zone_keys_if_editing()
+        else:
+            self.selected_keys = set(names)
+            self.active_zone_idx = None
+            self.zone_list.setCurrentRow(-1)
         self._render_keyboard()
         self._update_selection_label()
         self._update_brightness_enabled()
@@ -1448,10 +1588,11 @@ class MainWindow(QMainWindow):
         zone = self._zones()[row]
         self.selected_keys = set(zone["keys"])
         self._loading = True
-        self._set_picker_hex(zone["color"], apply=False)
+        self._set_picker_hex(zone.get("color") or "FFFFFF", apply=False)
         self.bright_slider.setValue(int(zone.get("brightness", 100)))
         self.bright_label.setText(f"{int(zone.get('brightness', 100))}%")
         self._loading = False
+        self._sync_effect_controls()
         self._render_keyboard()
         self._update_selection_label()
         self._update_brightness_enabled()
@@ -1498,6 +1639,268 @@ class MainWindow(QMainWindow):
         self._reload_zones()
         self._apply_live()
         self._status(f"Deleted '{zone['name']}' (unsaved).")
+
+    def _on_zone_move(self, delta):
+        """Move the selected zone up/down the layer stack (top of list wins)."""
+        i = self.active_zone_idx
+        if i is None:
+            return
+        zones = self._zones()
+        j = i + delta
+        if j < 0 or j >= len(zones):
+            return
+        zones[i], zones[j] = zones[j], zones[i]
+        self._reload_zones()
+        self.zone_list.setCurrentRow(j)
+        self._apply_live()
+
+    # ---- per-zone effect controls --------------------------------------
+
+    def _eff_panel(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        return w, lay
+
+    def _mk_spin(self, lo, hi, suffix, step):
+        s = QSpinBox()
+        s.setRange(lo, hi)
+        s.setSuffix(suffix)
+        s.setSingleStep(step)
+        s.valueChanged.connect(self._on_eff_param)
+        return s
+
+    def _mk_colors_control(self, pv):
+        """An 'Add color' button plus a row of clickable color swatches, shared
+        by every effect type so they all look and behave the same."""
+        row = QHBoxLayout()
+        addb = QPushButton("Add color")
+        addb.clicked.connect(self._on_eff_add_color)
+        row.addWidget(addb)
+        row.addStretch(1)
+        pv.addLayout(row)
+        srow = QHBoxLayout()
+        pv.addLayout(srow)
+        return srow
+
+    def _on_eff_add_color(self):
+        e = self._eff()
+        if e is None:
+            return
+        cols = e.setdefault("colors", [])
+        if len(cols) >= 8:
+            self._status("Capped at 8 colors.")
+            return
+        cols.append(self._picker_hex())
+        if e.get("type") == "colorcycle":
+            e["rainbow"] = False
+            prev = self._loading
+            self._loading = True
+            self.cc_rainbow.setChecked(False)
+            self._loading = prev
+        self._rebuild_effect_swatches(e)
+        self._apply_live()
+        self._status("Added color (unsaved).")
+
+    def _style_swatch(self, label, hexc):
+        label.setStyleSheet(
+            f"background:#{hexc or '000000'}; border:1px solid #888; border-radius:3px;")
+
+    def _eff(self):
+        """The selected zone's effect dict (any type), or None."""
+        if self.active_zone_idx is None:
+            return None
+        e = self._zones()[self.active_zone_idx].get("effect")
+        return e if isinstance(e, dict) else None
+
+    def _default_effect(self, t):
+        c = self._picker_hex() or "FF3300"
+        return {
+            "reactive": {"type": "reactive", "colors": [c], "peak_brightness": 100,
+                         "fade_seconds": 0.6},
+            "breathing": {"type": "breathing", "colors": [c], "period_seconds": 3.0,
+                          "min_brightness": 0, "max_brightness": 100},
+            "blinking": {"type": "blinking", "colors": [c], "on_seconds": 0.4, "off_seconds": 0.4},
+            "colorcycle": {"type": "colorcycle", "rainbow": True, "colors": [], "period_seconds": 5.0},
+            "twinkle": {"type": "twinkle", "colors": [c], "rainbow": False,
+                        "density": 0.3, "fade_seconds": 1.0},
+        }.get(t)
+
+    @staticmethod
+    def _copy_effect(e):
+        c = dict(e)
+        if isinstance(c.get("colors"), list):
+            c["colors"] = list(c["colors"])
+        return c
+
+    def _on_effect_type_changed(self, _idx):
+        if self._loading or self.active_zone_idx is None:
+            return
+        if not hasattr(self, "_effect_stash"):
+            self._effect_stash = {}          # id(zone) -> {type: effect dict}, in-memory
+        t = self.effect_combo.currentData()
+        z = self._zones()[self.active_zone_idx]
+        cur = z.get("effect")
+        # remember the effect we're leaving so switching back restores its settings
+        if isinstance(cur, dict) and cur.get("type"):
+            self._effect_stash.setdefault(id(z), {})[cur["type"]] = self._copy_effect(cur)
+        if t is None:
+            z.pop("effect", None)
+        elif not (isinstance(cur, dict) and cur.get("type") == t):
+            stashed = self._effect_stash.get(id(z), {}).get(t)
+            z["effect"] = self._copy_effect(stashed) if stashed else self._default_effect(t)
+        self._sync_effect_controls()
+        self._refresh_zone_row(self.active_zone_idx)
+        self._apply_live()
+        self._status("Effect updated (unsaved). Restart the watcher to see it live.")
+
+    def _on_eff_param(self, *_):
+        if self._loading:
+            return
+        e = self._eff()
+        if e is None:
+            return
+        t = e["type"]
+        if t == "reactive":
+            e["fade_seconds"] = round(self.rx_fade.value() / 1000.0, 3)
+            e["peak_brightness"] = self.rx_peak.value()
+        elif t == "breathing":
+            e["period_seconds"] = round(self.br_period.value() / 1000.0, 3)
+            e["min_brightness"] = self.br_min.value()
+            e["max_brightness"] = self.br_max.value()
+        elif t == "blinking":
+            e["on_seconds"] = round(self.bl_on.value() / 1000.0, 3)
+            e["off_seconds"] = round(self.bl_off.value() / 1000.0, 3)
+        elif t == "colorcycle":
+            e["rainbow"] = self.cc_rainbow.isChecked()
+            e["period_seconds"] = round(self.cc_period.value() / 1000.0, 3)
+        elif t == "twinkle":
+            e["rainbow"] = self.tw_rainbow.isChecked()
+            e["density"] = self.tw_density.value() / 100.0
+            e["fade_seconds"] = round(self.tw_fade.value() / 1000.0, 3)
+        self._apply_live()
+
+    def _rebuild_swatch_row(self, layout, colors):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+        for i, hexc in enumerate(colors or []):
+            btn = SwatchButton(i, self._on_effcolor_left, self._on_effcolor_right)
+            btn.set_hex(hexc)
+            layout.addWidget(btn)
+        layout.addStretch(1)
+
+    def _rebuild_effect_swatches(self, e):
+        rows = {"reactive": self.rx_colors_row, "breathing": self.br_colors_row,
+                "blinking": self.bl_colors_row, "colorcycle": self.cc_stops_row,
+                "twinkle": self.tw_colors_row}
+        row = rows.get(e.get("type"))
+        if row is not None:
+            self._rebuild_swatch_row(row, e.get("colors"))
+
+    def _on_effcolor_left(self, index):
+        """Left-click a color swatch: set it to the current picker color."""
+        e = self._eff()
+        if e is None:
+            return
+        cols = e.get("colors")
+        if not cols or index >= len(cols):
+            return
+        cols[index] = self._picker_hex()
+        self._rebuild_effect_swatches(e)
+        self._apply_live()
+        self._status(f"Color {index + 1} set to #{cols[index]} (unsaved).")
+
+    def _on_effcolor_right(self, index):
+        """Right-click a color swatch: remove it."""
+        e = self._eff()
+        if e is None:
+            return
+        cols = e.get("colors")
+        if not cols or index >= len(cols):
+            return
+        del cols[index]
+        if e.get("type") != "colorcycle" and not cols:
+            cols.append(self._picker_hex())   # non-cycle effects need at least one
+        self._rebuild_effect_swatches(e)
+        self._apply_live()
+        self._status("Removed color (unsaved).")
+
+    def _sync_effect_controls(self):
+        """Reflect the SELECTED zone's effect into the dropdown + panels."""
+        if not hasattr(self, "effect_combo"):
+            return
+        e = self._eff() or {}
+        t = e.get("type")
+        prev = self._loading
+        self._loading = True
+        idx = 0
+        for i in range(self.effect_combo.count()):
+            if self.effect_combo.itemData(i) == t:
+                idx = i
+                break
+        self.effect_combo.setCurrentIndex(idx)
+        for k, panel in self._eff_panels.items():
+            panel.setVisible(k == t)
+        if t == "reactive":
+            self.rx_fade.setValue(int(round(float(e.get("fade_seconds", 0.6)) * 1000)))
+            self.rx_peak.setValue(int(e.get("peak_brightness", 100)))
+            self._rebuild_swatch_row(self.rx_colors_row, e.get("colors"))
+        elif t == "breathing":
+            self.br_period.setValue(int(round(float(e.get("period_seconds", 3.0)) * 1000)))
+            self.br_min.setValue(int(e.get("min_brightness", 0)))
+            self.br_max.setValue(int(e.get("max_brightness", 100)))
+            self._rebuild_swatch_row(self.br_colors_row, e.get("colors"))
+        elif t == "blinking":
+            self.bl_on.setValue(int(round(float(e.get("on_seconds", 0.4)) * 1000)))
+            self.bl_off.setValue(int(round(float(e.get("off_seconds", 0.4)) * 1000)))
+            self._rebuild_swatch_row(self.bl_colors_row, e.get("colors"))
+        elif t == "colorcycle":
+            self.cc_rainbow.setChecked(bool(e.get("rainbow", True)))
+            self.cc_period.setValue(int(round(float(e.get("period_seconds", 5.0)) * 1000)))
+            self._rebuild_swatch_row(self.cc_stops_row, e.get("colors"))
+        elif t == "twinkle":
+            self.tw_rainbow.setChecked(bool(e.get("rainbow", False)))
+            self.tw_density.setValue(int(round(float(e.get("density", 0.3)) * 100)))
+            self.tw_fade.setValue(int(round(float(e.get("fade_seconds", 1.0)) * 1000)))
+            self._rebuild_swatch_row(self.tw_colors_row, e.get("colors"))
+        self._loading = prev
+
+    def _zone_item_text(self, z) -> str:
+        e = z.get("effect")
+        tag = f"  · {e['type']}" if isinstance(e, dict) and e.get("type") else ""
+        if z.get("color", ""):
+            meta = f"{len(z['keys'])} keys, {z.get('brightness', 100)}%"
+        else:
+            meta = f"{len(z['keys'])} keys, no color"
+        return f"{z['name']}  ({meta}){tag}"
+
+    def _swatch_icon(self, z):
+        pix = QPixmap(16, 16)
+        raw = z.get("color", "")
+        if not raw:
+            # transparent / no color: dark tile with a red diagonal slash
+            pix.fill(QColor("#2b2b2b"))
+            p = QPainter(pix)
+            p.setPen(QPen(QColor("#e04040"), 2))
+            p.drawLine(3, 13, 13, 3)
+            p.end()
+        else:
+            hexc = rc.scale_hex(raw, z.get("brightness", 100))
+            pix.fill(QColor(f"#{hexc}"))
+        return QIcon(pix)
+
+    def _on_zone_transparent(self):
+        if self.active_zone_idx is None:
+            QMessageBox.information(self, "No zone",
+                                    "Select a zone first, then make it transparent.")
+            return
+        self._zones()[self.active_zone_idx]["color"] = ""
+        self._refresh_zone_row(self.active_zone_idx)
+        self._apply_live()
+        self._status("Zone is now transparent (effect-only, unsaved).")
 
     # ---------------------------------------------------- functions ---
 
@@ -1630,19 +2033,19 @@ class MainWindow(QMainWindow):
     def _on_rgb_spin_changed(self, _v):
         if self._loading:
             return
-        self._set_picker_hex(self._picker_hex(), apply=True)
+        self._set_picker_hex(self._picker_hex(), apply=False)
 
     def _on_hex_changed(self):
         if self._loading:
             return
         text = self.hex_field.text().strip().lstrip("#")
         if len(text) == 6:
-            self._set_picker_hex(text, apply=True)
+            self._set_picker_hex(text, apply=False)
 
     def _on_wheel_changed(self, hex_color):
         if self._loading:
             return
-        self._set_picker_hex(hex_color, apply=True)
+        self._set_picker_hex(hex_color, apply=False)
 
     def _on_brightness_changed(self, val):
         self.bright_label.setText(f"{val}%")
@@ -1673,7 +2076,8 @@ class MainWindow(QMainWindow):
         z = self._zones()[idx]
         item = self.zone_list.item(idx)
         if item:
-            item.setText(f"{z['name']}  ({len(z['keys'])} keys, {z['brightness']}%)")
+            item.setText(self._zone_item_text(z))
+            item.setIcon(self._swatch_icon(z))
         self._render_keyboard()
 
     def _on_set_base_color(self):
@@ -1690,12 +2094,34 @@ class MainWindow(QMainWindow):
 
     def _push_to_keyboard(self):
         try:
-            layout = rc.resolve_mode_layout(self._mode())
+            mode = self._mode()
+            layout = rc.resolve_mode_layout(mode)
             colors = rc.build_color_array(layout, self.led_lookup, len(self.device.leds))
-            self.device.set_colors(colors)
-            self._status("Applied to keyboard.")
+            if rc.mode_has_effects(mode):
+                # animate effects right here in the preview (reactive shows its
+                # base only, since keypresses are captured by the watcher)
+                self._preview.configure(colors, mode)
+                self._preview.start()
+                self._status("Live preview running (effects animate here).")
+            else:
+                self._preview.stop()
+                self.device.set_colors(colors)
+                self._status("Applied to keyboard.")
         except Exception as e:
             self._status(f"Failed to apply: {e}")
+
+    def _on_live_toggled(self, on):
+        if on:
+            self._apply_live()
+        else:
+            self._preview.stop()
+
+    def closeEvent(self, e):
+        try:
+            self._preview.stop()
+        except Exception:
+            pass
+        super().closeEvent(e)
 
     def _on_apply_now(self):
         """Push to the keyboard now AND sync a running watcher: save the config
