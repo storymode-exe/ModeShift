@@ -829,7 +829,7 @@ class MainWindow(QMainWindow):
             "switches profiles automatically based on your focused game.<br><br>"
 
             "<h3>Modes vs Profiles (important for functions)</h3>"
-            "These behave differently when you hold a key, and it trips people up:<br><br>"
+            "These behave differently when you hold a key:<br><br>"
             "<b>Mode functions stay in the same profile</b>, so a momentary hold just works: "
             "set On&nbsp;Press → Mode&nbsp;2 and On&nbsp;Release → Mode&nbsp;1 on one key, "
             "and holding it lights Mode&nbsp;2, releasing returns to Mode&nbsp;1. Both the "
