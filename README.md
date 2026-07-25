@@ -32,6 +32,28 @@ per-game switching).
 - **Settings** for the ding, ding volume, countdown lights, countdown length, and
   watcher poll interval.
 
+## Screenshots
+
+### Color Zones
+Per-key lighting painted on a live map of your actual keyboard.
+
+![Color Zones](docs/screenshots/01-color-zones.png)
+
+### Functions
+Bind a key to change mode or profile on press and release.
+
+![Functions](docs/screenshots/02-functions.png)
+
+### Settings
+Toggle the ding, countdown lights, ding volume, countdown length, and watcher poll interval.
+
+![Settings](docs/screenshots/03-settings.png)
+
+### How-To
+The built-in guide, including the modes vs profiles explanation.
+
+![How-To](docs/screenshots/04-howto.png)
+
 ## How it works
 
 ModeShift is two programs sharing one config file (`games.json`):
