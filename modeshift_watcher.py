@@ -70,6 +70,8 @@ class Watcher:
         self._active_profile_name = None   # profile currently being displayed
         self._mode_override = None         # mode forced by a key function (momentary)
         self._icon = None                  # tray icon, set by main() for live updates
+        self._icon_color = "2F00FF"        # last mode colour, for icon redraws
+        self._icon_title = "ModeShift"
         # seed with the current command-file contents so a stale command from
         # a previous session doesn't fire on startup
         self._cmd_text = self._command_text()
@@ -206,11 +208,19 @@ class Watcher:
     def _update_icon(self, mode, profile_name, mode_name):
         """Recolor the tray icon to the current mode so mode/profile switches
         (including key-triggered ones) are visible at a glance."""
+        self._icon_color = representative_color(mode)
+        self._icon_title = f"ModeShift: {profile_name} / {mode_name}"
+        self._refresh_icon()
+
+    def _refresh_icon(self):
+        """Redraw the tray icon for the current colour and pause state."""
         if self._icon is None:
             return
         try:
-            self._icon.icon = make_icon_image(representative_color(mode))
-            self._icon.title = f"RGB Game Watcher: {profile_name} / {mode_name}"
+            paused = self.is_paused()
+            self._icon.icon = make_icon_image(self._icon_color, paused=paused)
+            self._icon.title = (f"{self._icon_title}  (paused)" if paused
+                                else self._icon_title)
         except Exception:
             pass
 
@@ -244,10 +254,12 @@ class Watcher:
         self._paused.set()
         if self._reactive is not None:
             self._reactive.stop()   # stop driving the board while paused
+        self._refresh_icon()        # show the pause bars in the tray
 
     def resume(self):
         self._paused.clear()
         self._last_applied = "__unset__"
+        self._refresh_icon()
 
     def is_paused(self) -> bool:
         return self._paused.is_set()
@@ -437,12 +449,20 @@ def representative_color(mode: dict) -> str:
     return base
 
 
-def make_icon_image(color_hex="2F00FF"):
+def make_icon_image(color_hex="2F00FF", paused=False):
     color_hex = color_hex.lstrip("#")
     rgb = tuple(int(color_hex[i:i + 2], 16) for i in (0, 2, 4))
     img = Image.new("RGB", (64, 64), rgb)
     draw = ImageDraw.Draw(img)
     draw.rectangle((0, 0, 63, 63), outline=(128, 128, 128), width=3)
+    if paused:
+        # two bars, in whichever of black/white stands out on this colour
+        bright = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+        bar = (0, 0, 0) if bright > 140 else (255, 255, 255)
+        edge = (255, 255, 255) if bar == (0, 0, 0) else (0, 0, 0)
+        for x0 in (18, 36):
+            draw.rectangle((x0 - 1, 15, x0 + 11, 49), fill=edge)
+            draw.rectangle((x0, 16, x0 + 10, 48), fill=bar)
     return img
 
 
