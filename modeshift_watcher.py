@@ -72,9 +72,15 @@ class Watcher:
         self._icon = None                  # tray icon, set by main() for live updates
         self._icon_color = "2F00FF"        # last mode colour, for icon redraws
         self._icon_title = "ModeShift"
-        # seed with the current command-file contents so a stale command from
-        # a previous session doesn't fire on startup
+        # Seed with the current command-file contents so a stale profile switch
+        # from a previous session doesn't fire on startup. A pause IS honoured
+        # though: if the editor is already open with live preview on, a watcher
+        # starting up must not grab the keyboard back from it.
         self._cmd_text = self._command_text()
+        if (rc.read_watcher_command() or {}).get("profile") == rc.WATCHER_CMD_PAUSE:
+            self._paused.set()
+            print("[modeshift] starting paused (the editor has the keyboard)",
+                  file=sys.stderr)
         self._connect()
 
     def _reset_key(self):
@@ -519,8 +525,14 @@ def build_tray(watcher: Watcher):
 
     default_prof = watcher._profiles().get(rc.DEFAULT_PROFILE_NAME, {})
     start_color = representative_color(rc.get_active_mode(default_prof)) if default_prof else "2F00FF"
-    return pystray.Icon("modeshift_watcher", icon=make_icon_image(start_color),
-                        title=f"RGB Game Watcher: {watcher.device_name}", menu=build_menu())
+    watcher._icon_color = start_color
+    watcher._icon_title = f"ModeShift: {watcher.device_name}"
+    paused = watcher.is_paused()          # may already be paused by the editor
+    return pystray.Icon(
+        "modeshift_watcher",
+        icon=make_icon_image(start_color, paused=paused),
+        title=watcher._icon_title + ("  (paused)" if paused else ""),
+        menu=build_menu())
 
 
 def list_leds(config_path: Path):
