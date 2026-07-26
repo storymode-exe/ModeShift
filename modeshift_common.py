@@ -676,13 +676,16 @@ def _have(cmd: str) -> bool:
 
 
 def detect_backend() -> str | None:
-    """Which tool to ask for the focused window.
+    """Which mechanism to ask for the focused window.
 
-    'kdotool' on KDE Wayland, 'xprop' on X11 (including XWayland sessions that
-    expose DISPLAY), or None if neither tool is installed. Cached after the
-    first call."""
+    'win32' on Windows, 'kdotool' on KDE Wayland, 'xprop' on X11 (including
+    XWayland sessions that expose DISPLAY), or None if nothing is available.
+    Cached after the first call."""
     global _BACKEND
     if _BACKEND is not _UNSET:
+        return _BACKEND
+    if sys.platform.startswith("win"):
+        _BACKEND = "win32"          # built into the OS, nothing to install
         return _BACKEND
     session = os.environ.get("XDG_SESSION_TYPE", "").lower()
     wayland = session == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
@@ -720,9 +723,32 @@ def parse_xprop_pid(text: str) -> int:
     return int(m.group(1)) if m else -1
 
 
+def _win32_active_window() -> tuple[str, int] | None:
+    """Focused window on Windows, via user32. The Win32 class name is often
+    generic (for example 'UnrealWindow'), so the process name usually does the
+    matching; both are checked by resolve_profile_name."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return (buf.value or "", int(pid.value) or -1)
+
+
 def get_active_window() -> tuple[str, int] | None:
     """(window class, pid) for the focused window, or None if it can't be read."""
     backend = detect_backend()
+    if backend == "win32":
+        try:
+            return _win32_active_window()
+        except Exception:
+            return None
     if backend is None:
         raise RuntimeError(
             "No window-detection tool found. Install kdotool for KDE Wayland "

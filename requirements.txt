@@ -1,7 +1,10 @@
 # ModeShift runtime dependencies (install with: pip install -r requirements.txt)
 openrgb-python>=0.3.0    # talks to the OpenRGB SDK server
 PySide6>=6.5             # Qt GUI (the editor)
-psutil>=5.9             # process names for game/window detection
-pystray>=0.19           # system tray icon (the watcher)
-Pillow>=9.0             # tray icon image generation
-evdev>=1.6             # global key capture for hold-to-switch functions (Linux)
+psutil>=5.9              # process names for game/window detection
+pystray>=0.19            # system tray icon (the watcher)
+Pillow>=9.0              # tray icon image generation
+
+# Linux only: raw key capture for type lighting, key functions and key states.
+# Windows uses its own hook, so pip skips this there.
+evdev>=1.6; sys_platform == "linux"
