@@ -1982,7 +1982,7 @@ class MainWindow(QMainWindow):
             return
         win_class, pid = result
         proc = rc.process_name_for_pid(pid)
-        match = (win_class or proc or "").strip().lower()
+        match = rc.best_match_string(win_class, proc)
         if not match:
             self._status("No window class or process name found for that window.")
             return

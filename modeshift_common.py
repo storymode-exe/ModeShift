@@ -523,6 +523,33 @@ def resolve_mode_layout(mode: dict) -> dict:
     return layout
 
 
+# Window classes that many unrelated apps share, so they are useless for
+# identifying a game. Electron and Chromium apps all report Chrome_WidgetWin_1,
+# every Firefox window is MozillaWindowClass, and so on.
+_GENERIC_CLASSES = {
+    "chrome_widgetwin_0", "chrome_widgetwin_1", "mozillawindowclass",
+    "qwidget", "qt5152qwindowicon", "qt5qwindowicon", "qt6qwindowicon",
+    "sdl_app", "glfw30", "unrealwindow", "unitywndclass", "wine",
+    "progman", "workerw", "cabinetwclass", "applicationframewindow",
+    "windowsforms10.window.8.app.0.141b42a_r6_ad1", "tkwindow",
+}
+
+
+def best_match_string(window_class: str, process_name: str) -> str:
+    """Pick the more identifying of a window class and a process name.
+
+    On Windows the class is usually a generic toolkit name shared by many apps,
+    so the process name is what actually identifies a game. On Linux the class
+    is normally specific and preferred."""
+    cls = (window_class or "").strip().lower()
+    proc = (process_name or "").strip().lower()
+    if proc.endswith(".exe"):
+        proc = proc[:-4]
+    if not cls or cls in _GENERIC_CLASSES:
+        return proc or cls
+    return cls
+
+
 def resolve_profile_name(window_class: str, pid: int, profiles: dict) -> str:
     """Returns the matching profile name, falling back to DEFAULT_PROFILE_NAME."""
     wc = (window_class or "").lower()
