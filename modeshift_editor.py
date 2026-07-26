@@ -26,6 +26,7 @@ Run:          python3 modeshift_editor.py
 """
 
 import colorsys
+import copy
 import json
 import shutil
 import subprocess
@@ -44,7 +45,7 @@ try:
         QHBoxLayout, QPushButton, QComboBox, QLineEdit, QLabel,
         QMessageBox, QInputDialog, QScrollArea, QCheckBox,
         QFrame, QListWidget, QListWidgetItem, QSlider, QSpinBox, QGroupBox,
-        QRubberBand, QTabWidget,
+        QRubberBand, QTabWidget, QDialog, QFileDialog,
     )
 except ImportError:
     print("Missing dependency: PySide6. Install with: pip install PySide6", file=sys.stderr)
@@ -54,7 +55,7 @@ import modeshift_common as rc
 import modeshift_effects as fx
 
 APP_NAME = "ModeShift"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
@@ -64,12 +65,20 @@ WATCHER_SCRIPT = Path(__file__).parent / "modeshift_watcher.py"
 CUSTOM_COLORS_PATH = rc.CONFIG_PATH.parent / "custom_colors.json"
 SETTINGS_PATH = rc.CONFIG_PATH.parent / "settings.json"
 
+EXPORT_SUFFIX = ".modeshift"
+EXPORT_MARKER = "modeshift_export"
+
+# Key tile size at 100%; scaled by the 'keyboard_scale' setting at startup.
+BASE_TILE_W, BASE_TILE_H = 54, 46
+TILE_SCALE = 1.0
+
 DEFAULT_SETTINGS = {
     "detect_ding": True,
     "ding_volume": 35,           # percent
     "detect_countdown_lights": True,
     "detect_seconds": 10,
     "finale_flash": True,
+    "keyboard_scale": 100,
 }
 CUSTOM_ROW = 8            # swatches per row
 CUSTOM_MAX = 64           # hard cap on saved custom colors
@@ -128,6 +137,7 @@ _BORDER_STYLES = {
     "zone": "3px solid #2ECC40",       # green: key belongs to the selected zone
     "mode": "3px solid #2ECC40",       # green: has a Change-Mode function
     "profile": "3px solid #FF4136",    # red: has a Change-Profile function
+    "keystate": "3px solid #00BFFF",   # blue: has a cooldown/toggle indicator
 }
 
 
@@ -136,7 +146,7 @@ class KeyTile(QPushButton):
         super().__init__(_short_label(key_name))
         self.key_name = key_name
         self.setToolTip(key_name)
-        self.setFixedSize(54, 46)
+        self.setFixedSize(int(BASE_TILE_W * TILE_SCALE), int(BASE_TILE_H * TILE_SCALE))
         self.setFlat(True)
         # Let mouse events pass through to the KeyboardCanvas so it can handle
         # both single-click toggle and rubber-band box selection uniformly.
@@ -157,7 +167,8 @@ class KeyTile(QPushButton):
         border = _BORDER_STYLES.get(self._border, _BORDER_STYLES[None])
         self.setStyleSheet(
             f"QPushButton {{ background-color: #{self._hex}; color: {_contrast_text(self._hex)}; "
-            f"border: {border}; border-radius: 3px; font-size: 10px; }}"
+            f"border: {border}; border-radius: 3px; "
+            f"font-size: {max(9, int(10 * TILE_SCALE))}px; }}"
         )
 
 
@@ -371,6 +382,117 @@ class SwatchButton(QPushButton):
             self._on_left(self.index)
 
 
+class KeyCaptureDialog(QDialog):
+    """Press a physical key; it is shown, then Accept confirms it. Reads raw
+    input via evdev (same path the watcher uses), polled on the GUI thread."""
+
+    def __init__(self, parent, valid_names):
+        super().__init__(parent)
+        self.setWindowTitle("Capture a key")
+        self.captured = None
+        self._valid = {n.lower(): n for n in valid_names}
+        self.setMinimumWidth(320)
+        self.setMaximumSize(520, 260)      # keep it a small popup, not a panel
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("Press a key, or hold modifiers and press a key "
+                           "(for example Ctrl + Shift + R)."))
+        self.label = QLabel("Waiting...")
+        self.label.setStyleSheet("font-weight:bold; font-size:15px; padding:8px;")
+        self.label.setWordWrap(True)
+        v.addWidget(self.label)
+        v.addStretch(1)
+        row = QHBoxLayout()
+        self.accept_btn = QPushButton("Accept")
+        self.accept_btn.setEnabled(False)
+        self.accept_btn.clicked.connect(self.accept)
+        row.addWidget(self.accept_btn)
+        again = QPushButton("Clear")
+        again.clicked.connect(self._reset_capture)
+        row.addWidget(again)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        v.addLayout(row)
+        self._held = []          # keys currently down, in press order
+
+        self._devs, self._sel, self._codes = [], None, {}
+        try:
+            import evdev
+            from evdev import ecodes
+            import selectors
+            for name in valid_names:
+                en = rc.key_name_to_ecode_name(name)
+                if en and hasattr(ecodes, en):
+                    self._codes[getattr(ecodes, en)] = name
+            self._sel = selectors.DefaultSelector()
+            for path in evdev.list_devices():
+                try:
+                    d = evdev.InputDevice(path)
+                except (PermissionError, OSError):
+                    continue
+                keys = d.capabilities().get(ecodes.EV_KEY, [])
+                if ecodes.KEY_A in keys and ecodes.KEY_Z in keys:
+                    self._devs.append(d)
+                    self._sel.register(d, selectors.EVENT_READ)
+            if not self._devs:
+                raise RuntimeError("no readable keyboards")
+            self._ecodes = ecodes
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._poll)
+            self._timer.start(40)
+        except Exception as e:
+            self.label.setText("Key capture unavailable")
+            note = QLabel("<i>Raw key capture needs python-evdev and your user in "
+                          f"the <tt>input</tt> group.<br>({e})</i>")
+            note.setWordWrap(True)
+            v.addWidget(note)
+        self.resize(360, 170)
+
+    def _reset_capture(self):
+        self.captured = None
+        self._held = []
+        self.label.setText("Waiting...")
+        self.accept_btn.setEnabled(False)
+
+    def _poll(self):
+        if self._sel is None:
+            return
+        for key, _ in self._sel.select(timeout=0):
+            try:
+                for ev in key.fileobj.read():
+                    if ev.type != self._ecodes.EV_KEY:
+                        continue
+                    name = self._codes.get(ev.code)
+                    if not name:
+                        continue
+                    if ev.value == 1:                       # key down
+                        if name not in self._held:
+                            self._held.append(name)
+                        # the longest simultaneous press wins, so holding
+                        # Ctrl+Shift then R captures all three
+                        combo = list(self._held)
+                        if self.captured is None or len(combo) > len(self.captured):
+                            self.captured = combo
+                            self.label.setText(" + ".join(combo))
+                            self.accept_btn.setEnabled(True)
+                    elif ev.value == 0 and name in self._held:   # key up
+                        self._held.remove(name)
+            except OSError:
+                continue
+
+    def closeEvent(self, e):
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        for d in self._devs:
+            try:
+                d.close()
+            except Exception:
+                pass
+        super().closeEvent(e)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cfg: dict, device, device_name, config_path):
         super().__init__()
@@ -385,6 +507,9 @@ class MainWindow(QMainWindow):
             raise RuntimeError(f"Device '{device.name}' has no matrix zone to draw.")
 
         self.settings = self._load_settings()
+        # apply the keyboard zoom before any key tiles are built
+        global TILE_SCALE
+        TILE_SCALE = max(1.0, min(2.0, int(self.settings.get("keyboard_scale", 100)) / 100.0))
         self.current_profile_name = rc.DEFAULT_PROFILE_NAME
         self.current_mode_name = self._profile()["active_mode"]
         self.selected_keys: set[str] = set()
@@ -420,24 +545,33 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # ===== top: left panel | keyboard =====
-        top = QHBoxLayout()
-        top.addWidget(self._build_left_panel())
-        top.addWidget(self._build_keyboard(), stretch=1)
-        root.addLayout(top, stretch=1)
+        # ===== top: the keyboard, full width =====
+        # The profile/mode panel lives in the bottom row instead of beside the
+        # board: it is taller than the keyboard, and having it up here forced
+        # the whole top row to its height and left a big gap under the keys.
+        root.addWidget(self._build_keyboard(), stretch=0)
 
-        # ===== bottom: tabbed (Color Zones / Functions) | color picker =====
+        # ===== bottom: profile panel | tabs | color picker =====
         bottom = QHBoxLayout()
+        left_panel = self._scrollable(self._build_left_panel())
+        left_panel.setFixedWidth(258)
+        bottom.addWidget(left_panel)
         self.bottom_tabs = QTabWidget()
-        self.bottom_tabs.addTab(self._build_zones_panel(), "Color Zones")
-        self.bottom_tabs.addTab(self._build_functions_panel(), "Functions")
-        self.bottom_tabs.addTab(self._build_settings_panel(), "Settings")
+        self.bottom_tabs.addTab(self._scrollable(self._build_zones_panel()), "Color Zones")
+        self.bottom_tabs.addTab(self._scrollable(self._build_functions_panel()), "Functions")
+        self.bottom_tabs.addTab(self._scrollable(self._build_keystates_panel()), "Key States")
+        self.bottom_tabs.addTab(self._scrollable(self._build_settings_panel()), "Settings")
         self.bottom_tabs.addTab(self._build_howto_panel(), "How-To")
-        self.bottom_tabs.addTab(self._build_about_panel(), "About")
+        self.bottom_tabs.addTab(self._scrollable(self._build_about_panel()), "About")
         self.bottom_tabs.currentChanged.connect(self._on_tab_changed)
         bottom.addWidget(self.bottom_tabs, stretch=1)
-        bottom.addWidget(self._build_color_panel())
-        root.addLayout(bottom)
+        color_panel = self._build_color_panel()
+        # The colour panel keeps its natural height and sits at the top of the
+        # row; the profile panel and the tabs take any extra vertical space, so
+        # their lists grow when the window is made taller.
+        color_panel.setFixedHeight(color_panel.sizeHint().height())
+        bottom.addWidget(color_panel, alignment=Qt.AlignTop)
+        root.addLayout(bottom, stretch=1)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -477,6 +611,8 @@ class MainWindow(QMainWindow):
 
         v.addWidget(QLabel("<b>Modes</b>  (active = applied by watcher)"))
         self.mode_list = QListWidget()
+        self.mode_list.setMinimumHeight(64)
+        self.mode_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
         self.mode_list.currentRowChanged.connect(self._on_mode_selected)
         self.mode_list.itemDoubleClicked.connect(lambda _i: self._on_rename_mode())
         v.addWidget(self.mode_list, stretch=1)
@@ -525,6 +661,8 @@ class MainWindow(QMainWindow):
         grid.setVerticalSpacing(4)
         grid.setAlignment(Qt.AlignLeft | Qt.AlignTop)
 
+        grid.setAlignment(Qt.AlignHCenter | Qt.AlignTop)   # centre the board
+
         num_cols = self.zone.mat_width
         gap_cols = self._find_gap_columns(self.zone.matrix_map, num_cols)
 
@@ -550,12 +688,18 @@ class MainWindow(QMainWindow):
         scroll.setWidget(container)
         scroll.setWidgetResizable(True)
 
+        # Pin the board to its natural height: it never stretches, and never
+        # squashes into a vertical scrollbar either.
+        kb_h = container.sizeHint().height()
+        scroll.setFixedHeight(kb_h)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
         wrap = QWidget()
         wl = QVBoxLayout(wrap)
         wl.setContentsMargins(0, 0, 0, 0)
         wl.addWidget(scroll)
         legend = QLabel(
-            "Left-click: select key  ·  Ctrl-click: add / remove  ·  drag: box-select  "
+            "Left-click: select key  ·  Ctrl-click: add / remove  ·  Drag: box-select  "
             "·  Ctrl-drag: add box     "
             "<span style='color:#FFD700'>■</span> selected   "
             "<span style='color:#2ECC40'>■</span> editing zone")
@@ -570,16 +714,24 @@ class MainWindow(QMainWindow):
             kb_w = self.keyboard_container.sizeHint().width()
         except Exception:
             kb_w = 1300
-        # 240 left panel + inter-panel spacing + scrollbar + window chrome
-        want_w = kb_w + 300
-        want_h = 820
+        # the keyboard spans the full width, so only chrome/margins to add;
+        # this also becomes the hard minimum so the board never needs to
+        # scroll sideways
+        want_w = kb_w + 40
+        # Qt's own minimum for everything assembled: the keyboard is a fixed
+        # height, so this is exactly "as small as it can go" and the window
+        # opens there instead of taller.
+        try:
+            want_h = self.minimumSizeHint().height()
+        except Exception:
+            want_h = 900
         try:
             screen = QApplication.primaryScreen().availableGeometry()
             want_w = min(want_w, screen.width() - 40)
             want_h = min(want_h, screen.height() - 60)
         except Exception:
             pass
-        return max(want_w, 1000), max(want_h, 600)
+        return want_w, want_h
 
     def _build_zones_panel(self) -> QWidget:
         box = QGroupBox("Zones (in selected mode)")
@@ -590,9 +742,13 @@ class MainWindow(QMainWindow):
             "Make a zone if you want to name a group and recolor it all at once.</i>"))
 
         self.zone_list = QListWidget()
+        # keep the window's natural height compact; the list still grows when
+        # the window is made taller
+        self.zone_list.setMinimumHeight(90)
+        self.zone_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
         self.zone_list.currentRowChanged.connect(self._on_zone_selected)
         self.zone_list.itemDoubleClicked.connect(lambda _i: self._on_rename_zone())
-        v.addWidget(self.zone_list)
+        v.addWidget(self.zone_list, stretch=1)   # grows when the window does
 
         row1 = QHBoxLayout()
         new_zone_btn = QPushButton("New zone from selection")
@@ -821,6 +977,136 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._status(f"Couldn't save settings: {e}")
 
+    @staticmethod
+    def _scrollable(inner: QWidget) -> QWidget:
+        """Wrap a panel in a scroll area so its content can't force the whole
+        window taller; it scrolls vertically instead. Never scrolls sideways:
+        labels wrap and the panel reflows to whatever width it is given."""
+        for lbl in inner.findChildren(QLabel):
+            lbl.setWordWrap(True)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _build_keystates_panel(self) -> QWidget:
+        box = QGroupBox("Key states (this mode)")
+        v = QVBoxLayout(box)
+
+        warn = QLabel(
+            "<b>Heads up:</b> these indicators follow <i>your keypresses</i>, not the "
+            "game. ModeShift cannot see whether an ability actually fired, whether a "
+            "shield was knocked offline, or whether you toggled something with the "
+            "mouse, so a light can drift out of sync with the game. Press the key "
+            "again to re-sync a toggle (the next press re-syncs a cooldown), or use "
+            "<i>Reset key states</i> in the tray menu to snap everything back."
+        )
+        warn.setWordWrap(True)
+        warn.setStyleSheet("background:#3a2f1a; border:1px solid #7a5c1e; "
+                           "border-radius:4px; padding:6px; color:#e8d9b0;")
+        v.addWidget(warn)
+
+        v.addWidget(QLabel("Click one key above to set it up. "
+                           "<span style='color:#00BFFF'>■</span> has a key state"))
+        self.ks_key_label = QLabel("No key selected")
+        self.ks_key_label.setStyleSheet("font-weight: bold;")
+        v.addWidget(self.ks_key_label)
+
+        trow = QHBoxLayout()
+        trow.addWidget(QLabel("Type:"))
+        self.ks_combo = QComboBox()
+        for label, val in [("None", None), ("Cooldown (timer)", "cooldown"),
+                           ("Toggle (on / off)", "toggle")]:
+            self.ks_combo.addItem(label, val)
+        self.ks_combo.currentIndexChanged.connect(self._on_ks_type_changed)
+        trow.addWidget(self.ks_combo, 1)
+        v.addLayout(trow)
+
+        self._ks_panels = {}
+
+        # cooldown: duration, active/stage colors, ready signal
+        p, pv = self._eff_panel()
+        r = QHBoxLayout(); r.addWidget(QLabel("Duration:"))
+        self.ks_duration = QSpinBox(); self.ks_duration.setRange(1, 3600)
+        self.ks_duration.setSuffix(" s"); self.ks_duration.valueChanged.connect(self._on_ks_param)
+        r.addWidget(self.ks_duration); r.addStretch(1); pv.addLayout(r)
+
+        r = QHBoxLayout()
+        b = QPushButton("Set 'ready' color"); b.clicked.connect(lambda: self._ks_set_color("ready_color"))
+        r.addWidget(b); self.ks_ready_sw = QLabel(); self.ks_ready_sw.setFixedSize(22, 22)
+        r.addWidget(self.ks_ready_sw); r.addStretch(1); pv.addLayout(r)
+        pv.addWidget(QLabel("<i>The key rests at this color whenever the ability is "
+                            "available, on top of any zone color.</i>"))
+
+        r = QHBoxLayout()
+        b = QPushButton("Set 'on cooldown' color"); b.clicked.connect(lambda: self._ks_set_color("active_color"))
+        r.addWidget(b); self.ks_active_sw = QLabel(); self.ks_active_sw.setFixedSize(22, 22)
+        r.addWidget(self.ks_active_sw); r.addStretch(1); pv.addLayout(r)
+
+        self.ks_fade = QCheckBox("Fade toward the ready color as it counts down")
+        self.ks_fade.setToolTip("The key blends from the cooldown color to the ready "
+                                "color, so at a glance you can tell roughly how much "
+                                "time is left.")
+        self.ks_fade.stateChanged.connect(self._on_ks_param)
+        pv.addWidget(self.ks_fade)
+
+        r = QHBoxLayout(); r.addWidget(QLabel("When ready:"))
+        self.ks_signal = QComboBox()
+        for label, val in [("Just the ready color", "solid"), ("Blink", "blink"),
+                           ("Breathe", "breathe")]:
+            self.ks_signal.addItem(label, val)
+        self.ks_signal.currentIndexChanged.connect(self._on_ks_param)
+        r.addWidget(self.ks_signal, 1); pv.addLayout(r)
+
+        r = QHBoxLayout()
+        self.ks_keep_ready = QCheckBox("Keep it up until I press the key again")
+        self.ks_keep_ready.stateChanged.connect(self._on_ks_keep_ready)
+        r.addWidget(self.ks_keep_ready); pv.addLayout(r)
+        r = QHBoxLayout(); r.addWidget(QLabel("or stop after"))
+        self.ks_ready_secs = QSpinBox(); self.ks_ready_secs.setRange(1, 60)
+        self.ks_ready_secs.setSuffix(" s")
+        self.ks_ready_secs.valueChanged.connect(self._on_ks_param)
+        r.addWidget(self.ks_ready_secs); r.addStretch(1); pv.addLayout(r)
+
+        self.ks_stages_row = QHBoxLayout(); pv.addLayout(self.ks_stages_row)
+        self._ks_panels["cooldown"] = p; v.addWidget(p)
+
+        # toggle: 2+ state colors
+        p, pv = self._eff_panel()
+        r = QHBoxLayout()
+        b = QPushButton("Add state color"); b.clicked.connect(self._on_ks_add_toggle_color)
+        r.addWidget(b); r.addStretch(1); pv.addLayout(r)
+        self.ks_toggle_row = QHBoxLayout(); pv.addLayout(self.ks_toggle_row)
+        pv.addWidget(QLabel("<i>Each press advances to the next color and stays "
+                            "there. Two colors give a simple on/off. Click a swatch "
+                            "to change it, right-click to remove.</i>"))
+        self._ks_panels["toggle"] = p; v.addWidget(p)
+
+        clear_btn = QPushButton("Remove key state from this key")
+        clear_btn.clicked.connect(self._on_ks_clear)
+        v.addWidget(clear_btn)
+
+        v.addWidget(self._hline())
+        v.addWidget(QLabel("<b>Re-sync shortcut</b>"))
+        rr = QHBoxLayout()
+        self.ks_reset_label = QLabel("(none set)")
+        rr.addWidget(self.ks_reset_label, 1)
+        b = QPushButton("Set key"); b.clicked.connect(self._on_ks_set_reset_key)
+        rr.addWidget(b)
+        b2 = QPushButton("Clear"); b2.clicked.connect(self._on_ks_clear_reset_key)
+        rr.addWidget(b2)
+        v.addLayout(rr)
+        v.addWidget(QLabel("<i>Pressing this key resets every cooldown and toggle "
+                           "back to its default, handy when the lights drift out of "
+                           "sync with the game. Applies to all profiles.</i>"))
+        self._sync_reset_key_label()
+        v.addStretch(1)
+
+        self._sync_ks_controls()
+        return box
+
     def _build_settings_panel(self) -> QWidget:
         box = QGroupBox("Settings")
         v = QVBoxLayout(box)
@@ -885,8 +1171,158 @@ class MainWindow(QMainWindow):
             "<i>How often the watcher checks the focused window. Lower = snappier "
             "profile switching, slightly more CPU. Save + Restart Watcher to apply.</i>"))
 
+        v.addWidget(self._hline())
+
+        # --- Appearance ---
+        v.addWidget(QLabel("<b>Appearance</b>"))
+        sc_row = QHBoxLayout()
+        sc_row.addWidget(QLabel("Keyboard size"))
+        self.set_scale_combo = QComboBox()
+        for label, val in [("100%", 100), ("125%", 125), ("150%", 150), ("200%", 200)]:
+            self.set_scale_combo.addItem(label, val)
+        cur = int(self.settings.get("keyboard_scale", 100))
+        for i in range(self.set_scale_combo.count()):
+            if self.set_scale_combo.itemData(i) == cur:
+                self.set_scale_combo.setCurrentIndex(i)
+                break
+        self.set_scale_combo.currentIndexChanged.connect(self._on_scale_changed)
+        sc_row.addWidget(self.set_scale_combo)
+        sc_row.addStretch(1)
+        v.addLayout(sc_row)
+        v.addWidget(QLabel(
+            "<i>Draws the keyboard bigger. The window grows to fit, up to your screen "
+            "size. Reopen the editor to apply.</i>"))
+
+        v.addWidget(self._hline())
+
+        # --- Import / export profiles ---
+        v.addWidget(QLabel("<b>Import / export profiles</b>"))
+        ex_row = QHBoxLayout()
+        self.export_combo = QComboBox()
+        ex_row.addWidget(self.export_combo, 1)
+        ex_btn = QPushButton("Export")
+        ex_btn.clicked.connect(self._on_export_profiles)
+        ex_row.addWidget(ex_btn)
+        im_btn = QPushButton("Import")
+        im_btn.clicked.connect(self._on_import_profiles)
+        ex_row.addWidget(im_btn)
+        v.addLayout(ex_row)
+        v.addWidget(QLabel(
+            f"<i>Exports to a <tt>{EXPORT_SUFFIX}</tt> file (plain JSON) you can back "
+            "up or share. Importing keeps your existing profiles and asks what to do "
+            "if a name already exists. Keys your board does not have are dropped.</i>"))
+
         v.addStretch(1)
         return box
+
+    def _on_scale_changed(self, _idx):
+        val = self.set_scale_combo.currentData()
+        if val:
+            self._set_setting("keyboard_scale", int(val))
+            self._status(f"Keyboard size set to {val}%. Reopen the editor to apply.")
+
+    def _reload_export_combo(self):
+        if not hasattr(self, "export_combo"):
+            return
+        self.export_combo.blockSignals(True)
+        self.export_combo.clear()
+        self.export_combo.addItem("All profiles", None)
+        for name in self._all_profiles():
+            self.export_combo.addItem(name, name)
+        self.export_combo.blockSignals(False)
+
+    def _on_export_profiles(self):
+        which = self.export_combo.currentData()
+        profiles = self._all_profiles()
+        payload = dict(profiles) if which is None else {which: profiles.get(which)}
+        if not payload or any(p is None for p in payload.values()):
+            QMessageBox.warning(self, "Nothing to export", "That profile no longer exists.")
+            return
+        default = ("modeshift-profiles" if which is None
+                   else which.lower().replace(" ", "-")) + EXPORT_SUFFIX
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export profiles", default,
+            f"ModeShift profiles (*{EXPORT_SUFFIX});;JSON (*.json);;All files (*)")
+        if not path:
+            return
+        if not path.endswith((EXPORT_SUFFIX, ".json")):
+            path += EXPORT_SUFFIX
+        doc = {
+            EXPORT_MARKER: 1,
+            "app_version": APP_VERSION,
+            "device": self.device_name,
+            "profiles": copy.deepcopy(payload),
+        }
+        try:
+            Path(path).write_text(json.dumps(doc, indent=2) + "\n")
+            self._status(f"Exported {len(payload)} profile(s) to {Path(path).name}.")
+        except OSError as e:
+            QMessageBox.critical(self, "Export failed", str(e))
+
+    def _on_import_profiles(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import profiles", "",
+            f"ModeShift profiles (*{EXPORT_SUFFIX});;JSON (*.json);;All files (*)")
+        if not path:
+            return
+        try:
+            doc = json.loads(Path(path).read_text())
+        except (OSError, ValueError) as e:
+            QMessageBox.critical(self, "Import failed", f"Could not read that file.\n{e}")
+            return
+        if not isinstance(doc, dict) or EXPORT_MARKER not in doc:
+            QMessageBox.critical(self, "Import failed",
+                                 "That does not look like a ModeShift export.")
+            return
+        incoming = doc.get("profiles")
+        if not isinstance(incoming, dict) or not incoming:
+            QMessageBox.warning(self, "Nothing to import", "That file has no profiles.")
+            return
+
+        # run through the normalizer (migrates older exports) and drop keys this
+        # keyboard does not have, reusing the same carry-over used for new boards
+        clean = rc._normalize_profiles(copy.deepcopy(incoming))
+        clean = rc.carry_over_profiles(clean, rc.device_key_names(self.device))
+
+        profiles = self._all_profiles()
+        added = replaced = skipped = 0
+        for name, prof in clean.items():
+            if name == rc.DEFAULT_PROFILE_NAME and name in profiles:
+                target = self._unique_profile_name(f"{name} (imported)")
+            elif name in profiles:
+                box = QMessageBox(self)
+                box.setWindowTitle("Profile exists")
+                box.setText(f"'{name}' already exists. What would you like to do?")
+                rep = box.addButton("Replace", QMessageBox.AcceptRole)
+                keep = box.addButton("Keep both", QMessageBox.ActionRole)
+                box.addButton("Skip", QMessageBox.RejectRole)
+                box.exec()
+                if box.clickedButton() is rep:
+                    target = name
+                    replaced += 1
+                elif box.clickedButton() is keep:
+                    target = self._unique_profile_name(name)
+                else:
+                    skipped += 1
+                    continue
+            else:
+                target = name
+            if target != name or target not in profiles:
+                added += 1 if target not in profiles else 0
+            profiles[target] = prof
+        self._reload_all()
+        self._reload_export_combo()
+        self._status(f"Imported {added + replaced} profile(s) "
+                     f"({replaced} replaced, {skipped} skipped). Save to keep them.")
+
+    def _unique_profile_name(self, base):
+        profiles = self._all_profiles()
+        if base not in profiles:
+            return base
+        n = 2
+        while f"{base} {n}" in profiles:
+            n += 1
+        return f"{base} {n}"
 
     def _set_setting(self, key, value):
         self.settings[key] = value
@@ -904,6 +1340,7 @@ class MainWindow(QMainWindow):
         box = QGroupBox("How-To")
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         inner = QWidget()
         v = QVBoxLayout(inner)
         text = QLabel(
@@ -912,7 +1349,13 @@ class MainWindow(QMainWindow):
             "color on the wheel, then hit <i>Apply color</i>. No zone needed. Use "
             "<i>Set as mode BASE color</i> for the whole board.<br><br>"
             "<b>2. Zones (optional).</b> Select keys and hit <i>New zone from selection</i> "
-            "to name a group you can recolor or dim all at once.<br><br>"
+            "to name a group you can recolor or dim all at once. With a zone selected, "
+            "Ctrl-click keys to add or remove them from it.<br><br>"
+            "<b>2b. Zone effects.</b> With a zone selected, pick an <i>Effect</i>: type "
+            "lighting (lights up as you type), breathing, blinking, color cycle, or "
+            "twinkle. Add up to 8 colors and they cycle automatically. A zone can be "
+            "<i>No color (transparent)</i> so only its effect shows, which is how you "
+            "get whole-keyboard type lighting over your normal colors.<br><br>"
             "<b>3. Profiles &amp; games.</b> Make a profile per game with <i>New</i>, then set "
             "its <b>Match string</b>, or just click <i>Detect from focused window</i>, "
             "alt-tab into the game, and it fills it for you.<br><br>"
@@ -924,6 +1367,17 @@ class MainWindow(QMainWindow):
             "<b>6. Go live.</b> Hit <i>Apply Now</i> to push a profile and sync the running "
             "watcher, or <i>Start / Restart Watcher</i> to (re)launch it. The watcher then "
             "switches profiles automatically based on your focused game.<br><br>"
+
+            "<b>7. Key States.</b> On the Key States tab, click a key and give it a "
+            "<i>cooldown</i> or a <i>toggle</i>. A <b>cooldown</b> rests at its ready "
+            "color, turns the 'on cooldown' color when you press it, then counts down "
+            "and signals ready again (solid, blink, or breathe). Tick <i>Fade toward "
+            "the ready color</i> and the key itself becomes a rough progress bar. A "
+            "<b>toggle</b> flips to the next color on each press and stays there, good "
+            "for shields or engines on/off. You can also set a <i>Re-sync shortcut</i> "
+            "(a key or a combo like Ctrl + Shift + R) that resets every indicator.<br>"
+            "Remember these follow your keypresses, not the game, so they can drift out "
+            "of sync.<br><br>"
 
             "<h3>Modes vs Profiles (important for functions)</h3>"
             "These behave differently when you hold a key:<br><br>"
@@ -941,10 +1395,29 @@ class MainWindow(QMainWindow):
             "Profile&nbsp;A in Profile&nbsp;B. Or keep it simple with press-only toggles "
             "(press in A → B, press again in B → A).<br><br>"
 
+            "<h3>What covers what</h3>"
+            "Everything is drawn in layers, from the bottom up:<br>"
+            "1. the mode's <b>base color</b><br>"
+            "2. <b>zones</b> (the top zone in the list wins where they overlap, use the "
+            "Move up / Move down buttons to reorder)<br>"
+            "3. <b>direct key colors</b> set on individual keys<br>"
+            "4. <b>zone effects</b><br>"
+            "5. <b>Key State colors</b> (cooldown and toggle)<br><br>"
+            "So a <b>Key State color always wins</b>: if you give a key a cooldown or "
+            "toggle, its indicator color covers whatever that key was set to in Color "
+            "Zones. That is deliberate, an ability's status should always be readable. "
+            "A cooldown key sits at its <i>ready</i> color whenever it is available, so "
+            "pick a ready color you are happy seeing all the time (or use a toggle if "
+            "you would rather it match the zone).<br><br>"
+
             "<h3>Tips</h3>"
-            "• Direct key colors beat zone colors beat the base color.<br>"
+            "• The color wheel just holds a color, nothing changes until you hit "
+            "<i>Apply color</i>, a swatch, or one of the 'set color' buttons.<br>"
+            "• Effects only animate in the editor while <i>Live preview</i> is on, and "
+            "type lighting needs the watcher running (it reads your keypresses).<br>"
             "• The watcher must have OpenRGB's SDK Server running.<br>"
-            "• Key functions need your user in the <tt>input</tt> group.<br>"
+            "• Key functions, key states, and the re-sync shortcut all need your user "
+            "in the <tt>input</tt> group.<br>"
             "• Match strings match the window <i>class/process</i>, not the title, use "
             "Detect if unsure."
         )
@@ -1044,11 +1517,12 @@ class MainWindow(QMainWindow):
         v.addLayout(bright_row)
 
         v.addWidget(self._hline())
-        apply_btn = QPushButton("Apply color to zone / keys")
-        apply_btn.setToolTip("Paint the color above onto the selected zone, or "
-                             "onto the selected keys if no zone is active.")
-        apply_btn.clicked.connect(self._apply_picker_to_zone)
-        v.addWidget(apply_btn)
+        self.apply_btn = QPushButton("Apply color to zone / keys")
+        self.apply_btn.setToolTip("Paint the color above onto the selected zone, or "
+                                  "onto the selected keys if no zone is active.")
+        self.apply_btn.clicked.connect(self._apply_picker_to_zone)
+        self.apply_btn.setMinimumHeight(34)
+        v.addWidget(self.apply_btn)
         base_btn = QPushButton("Set as mode BASE color")
         base_btn.clicked.connect(self._on_set_base_color)
         v.addWidget(base_btn)
@@ -1150,6 +1624,7 @@ class MainWindow(QMainWindow):
         self.match_field.setText(self._profile().get("match", ""))
         self.match_field.setEnabled(self.current_profile_name != rc.DEFAULT_PROFILE_NAME)
         self._loading = False
+        self._reload_export_combo()
         self._reload_modes()
 
     def _reload_modes(self):
@@ -1194,6 +1669,13 @@ class MainWindow(QMainWindow):
                     tile.set_border("selected")
                 else:
                     tile.set_border(self._key_function_kind(key_name))
+            elif self.edit_mode == "keystates":
+                if key_name == getattr(self, "ks_selected_key", None):
+                    tile.set_border("selected")
+                elif key_name in self._mode().get("key_states", {}):
+                    tile.set_border("keystate")
+                else:
+                    tile.set_border(None)
             else:
                 if key_name in self.selected_keys:
                     # green while editing a zone's members, yellow for a free selection
@@ -1512,6 +1994,12 @@ class MainWindow(QMainWindow):
             self._load_func_editor()
             self._render_keyboard()
             return
+        # Key States tab: single-key selection, load its indicator editor.
+        if self.edit_mode == "keystates":
+            self.ks_selected_key = tile.key_name
+            self._sync_ks_controls()
+            self._render_keyboard()
+            return
         # Color Zones tab. Ctrl-click toggles a key (add/remove); a plain click
         # starts a fresh single-key selection and drops any active zone.
         ctrl = bool(QApplication.keyboardModifiers() & Qt.ControlModifier)
@@ -1780,17 +2268,76 @@ class MainWindow(QMainWindow):
             e["fade_seconds"] = round(self.tw_fade.value() / 1000.0, 3)
         self._apply_live()
 
-    def _rebuild_swatch_row(self, layout, colors):
+    def _rebuild_swatch_row(self, layout, colors, target="effect"):
+        """target: which color list these swatches edit.
+        'effect'    -> the selected zone's effect colors
+        'ks_stages' -> the selected key's cooldown stage colors
+        'ks_toggle' -> the selected key's toggle state colors"""
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
             if w is not None:
                 w.setParent(None)
         for i, hexc in enumerate(colors or []):
-            btn = SwatchButton(i, self._on_effcolor_left, self._on_effcolor_right)
+            btn = SwatchButton(
+                i,
+                lambda idx, t=target: self._on_swatch_left(idx, t),
+                lambda idx, t=target: self._on_swatch_right(idx, t),
+            )
             btn.set_hex(hexc)
             layout.addWidget(btn)
         layout.addStretch(1)
+
+    def _swatch_target_colors(self, target):
+        """(list, owner) for a swatch row, or (None, None)."""
+        if target == "effect":
+            e = self._eff()
+            return (e.get("colors") if e else None), e
+        s = self._ks()
+        if s is None:
+            return None, None
+        if target == "ks_stages" and s.get("type") == "cooldown":
+            return s.setdefault("stages", []), s
+        if target == "ks_toggle" and s.get("type") == "toggle":
+            return s.setdefault("colors", []), s
+        return None, None
+
+    def _refresh_swatch_target(self, target):
+        cols, _ = self._swatch_target_colors(target)
+        if target == "effect":
+            e = self._eff()
+            if e:
+                self._rebuild_effect_swatches(e)
+        elif target == "ks_stages":
+            self._rebuild_swatch_row(self.ks_stages_row, cols, "ks_stages")
+        elif target == "ks_toggle":
+            self._rebuild_swatch_row(self.ks_toggle_row, cols, "ks_toggle")
+
+    def _on_swatch_left(self, index, target):
+        """Left-click a swatch: set it to the current picker color."""
+        cols, _ = self._swatch_target_colors(target)
+        if not cols or index >= len(cols):
+            return
+        cols[index] = self._picker_hex()
+        self._refresh_swatch_target(target)
+        self._apply_live()
+        self._status(f"Color {index + 1} set to #{cols[index]} (unsaved).")
+
+    def _on_swatch_right(self, index, target):
+        """Right-click a swatch: remove it."""
+        cols, owner = self._swatch_target_colors(target)
+        if not cols or index >= len(cols):
+            return
+        del cols[index]
+        # these lists must keep at least one entry to stay meaningful
+        if not cols and target in ("effect", "ks_toggle"):
+            if not (target == "effect" and owner and owner.get("type") == "colorcycle"):
+                cols.append(self._picker_hex())
+        if target == "ks_toggle" and len(cols) < 2:
+            cols.append("202020")
+        self._refresh_swatch_target(target)
+        self._apply_live()
+        self._status("Removed color (unsaved).")
 
     def _rebuild_effect_swatches(self, e):
         rows = {"reactive": self.rx_colors_row, "breathing": self.br_colors_row,
@@ -1799,34 +2346,6 @@ class MainWindow(QMainWindow):
         row = rows.get(e.get("type"))
         if row is not None:
             self._rebuild_swatch_row(row, e.get("colors"))
-
-    def _on_effcolor_left(self, index):
-        """Left-click a color swatch: set it to the current picker color."""
-        e = self._eff()
-        if e is None:
-            return
-        cols = e.get("colors")
-        if not cols or index >= len(cols):
-            return
-        cols[index] = self._picker_hex()
-        self._rebuild_effect_swatches(e)
-        self._apply_live()
-        self._status(f"Color {index + 1} set to #{cols[index]} (unsaved).")
-
-    def _on_effcolor_right(self, index):
-        """Right-click a color swatch: remove it."""
-        e = self._eff()
-        if e is None:
-            return
-        cols = e.get("colors")
-        if not cols or index >= len(cols):
-            return
-        del cols[index]
-        if e.get("type") != "colorcycle" and not cols:
-            cols.append(self._picker_hex())   # non-cycle effects need at least one
-        self._rebuild_effect_swatches(e)
-        self._apply_live()
-        self._status("Removed color (unsaved).")
 
     def _sync_effect_controls(self):
         """Reflect the SELECTED zone's effect into the dropdown + panels."""
@@ -1902,6 +2421,150 @@ class MainWindow(QMainWindow):
         self._apply_live()
         self._status("Zone is now transparent (effect-only, unsaved).")
 
+    # ---------------------------------------------------- key states ---
+
+    def _key_states(self) -> dict:
+        return self._mode().setdefault("key_states", {})
+
+    def _ks(self):
+        """The selected key's state indicator, or None."""
+        k = getattr(self, "ks_selected_key", None)
+        if not k:
+            return None
+        s = self._key_states().get(k)
+        return s if isinstance(s, dict) else None
+
+    def _default_key_state(self, t):
+        c = self._picker_hex() or "FF2A00"
+        if t == "cooldown":
+            return {"type": "cooldown", "duration_seconds": 30.0, "active_color": c,
+                    "stages": [], "ready_color": "00FF66", "ready_signal": "blink",
+                    "ready_seconds": 2.0, "idle_color": ""}
+        return {"type": "toggle", "colors": [c, "202020"], "start_index": 0}
+
+    def _on_ks_type_changed(self, _idx):
+        if self._loading or not getattr(self, "ks_selected_key", None):
+            return
+        t = self.ks_combo.currentData()
+        states = self._key_states()
+        if t is None:
+            states.pop(self.ks_selected_key, None)
+        else:
+            cur = states.get(self.ks_selected_key)
+            if not (isinstance(cur, dict) and cur.get("type") == t):
+                states[self.ks_selected_key] = self._default_key_state(t)
+        self._sync_ks_controls()
+        self._render_keyboard()
+        self._status("Key state updated (unsaved). Restart the watcher to use it.")
+
+    def _on_ks_param(self, *_):
+        if self._loading:
+            return
+        s = self._ks()
+        if s is None or s["type"] != "cooldown":
+            return
+        s["duration_seconds"] = float(self.ks_duration.value())
+        s["ready_signal"] = self.ks_signal.currentData() or "solid"
+        s["countdown_fade"] = self.ks_fade.isChecked()
+        if not self.ks_keep_ready.isChecked():
+            s["ready_seconds"] = float(self.ks_ready_secs.value())
+
+    def _on_ks_keep_ready(self, state):
+        """'Keep it up until I press again' is stored as ready_seconds = 0."""
+        if self._loading:
+            return
+        s = self._ks()
+        if s is None or s["type"] != "cooldown":
+            return
+        keep = bool(state)
+        s["ready_seconds"] = 0.0 if keep else float(self.ks_ready_secs.value())
+        self.ks_ready_secs.setEnabled(not keep)
+
+    def _ks_set_color(self, field):
+        s = self._ks()
+        if s is None:
+            return
+        s[field] = self._picker_hex()
+        self._sync_ks_controls()
+        self._status(f"Set {field.replace('_', ' ')} to #{s[field]} (unsaved).")
+
+    def _on_ks_add_toggle_color(self):
+        s = self._ks()
+        if s is None or s["type"] != "toggle":
+            return
+        cols = s.setdefault("colors", [])
+        if len(cols) >= 8:
+            self._status("Up to 8 toggle states.")
+            return
+        cols.append(self._picker_hex())
+        self._rebuild_swatch_row(self.ks_toggle_row, cols, "ks_toggle")
+        self._status("Added toggle state (unsaved).")
+
+    def _sync_reset_key_label(self):
+        k = self.settings.get("reset_key") or ""
+        self.ks_reset_label.setText(k if k else "(none set)")
+
+    def _on_ks_set_reset_key(self):
+        dlg = KeyCaptureDialog(self, list(self.tiles.keys()))
+        if dlg.exec() and dlg.captured:
+            combo = " + ".join(dlg.captured)
+            self._set_setting("reset_key", combo)
+            self._sync_reset_key_label()
+            self._status(f"'{combo}' will reset key states "
+                         f"(restart the watcher to apply).")
+
+    def _on_ks_clear_reset_key(self):
+        self._set_setting("reset_key", "")
+        self._sync_reset_key_label()
+        self._status("Re-sync shortcut cleared (restart the watcher to apply).")
+
+    def _on_ks_clear(self):
+        k = getattr(self, "ks_selected_key", None)
+        if not k:
+            return
+        self._key_states().pop(k, None)
+        self._sync_ks_controls()
+        self._render_keyboard()
+        self._status(f"Removed key state from {k} (unsaved).")
+
+    def _sync_ks_controls(self):
+        if not hasattr(self, "ks_combo"):
+            return
+        k = getattr(self, "ks_selected_key", None)
+        s = self._ks() or {}
+        t = s.get("type")
+        prev = self._loading
+        self._loading = True
+        self.ks_key_label.setText(k or "No key selected")
+        idx = 0
+        for i in range(self.ks_combo.count()):
+            if self.ks_combo.itemData(i) == t:
+                idx = i
+                break
+        self.ks_combo.setCurrentIndex(idx)
+        self.ks_combo.setEnabled(bool(k))
+        for name, panel in self._ks_panels.items():
+            panel.setVisible(name == t)
+        if t == "cooldown":
+            self.ks_duration.setValue(int(round(float(s.get("duration_seconds", 30)))))
+            secs = float(s.get("ready_seconds", 2))
+            keep = secs <= 0
+            self.ks_keep_ready.setChecked(keep)
+            self.ks_ready_secs.setEnabled(not keep)
+            self.ks_ready_secs.setValue(int(round(secs)) if secs >= 1 else 2)
+            self.ks_fade.setChecked(bool(s.get("countdown_fade", True)))
+            sig = s.get("ready_signal", "solid")
+            for i in range(self.ks_signal.count()):
+                if self.ks_signal.itemData(i) == sig:
+                    self.ks_signal.setCurrentIndex(i)
+                    break
+            self._style_swatch(self.ks_active_sw, s.get("active_color", "FF2A00"))
+            self._style_swatch(self.ks_ready_sw, s.get("ready_color", "00FF66"))
+            self._rebuild_swatch_row(self.ks_stages_row, s.get("stages"), "ks_stages")
+        elif t == "toggle":
+            self._rebuild_swatch_row(self.ks_toggle_row, s.get("colors"), "ks_toggle")
+        self._loading = prev
+
     # ---------------------------------------------------- functions ---
 
     def _functions(self) -> dict:
@@ -1920,7 +2583,20 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_tab_changed(self, index):
-        self.edit_mode = {0: "zones", 1: "functions"}.get(index, "about")
+        self.edit_mode = {0: "zones", 1: "functions", 2: "keystates"}.get(index, "about")
+        # the Apply button only makes sense on the Color Zones tab; elsewhere
+        # the color wheel feeds that tab's own "set colour" controls instead
+        if hasattr(self, "apply_btn"):
+            on_zones = self.edit_mode == "zones"
+            self.apply_btn.setEnabled(on_zones)
+            self.apply_btn.setText("Apply color to zone / keys" if on_zones
+                                   else "Apply color (Color Zones tab only)")
+            self.apply_btn.setToolTip(
+                "Paint the color above onto the selected zone, or onto the "
+                "selected keys if no zone is active."
+                if on_zones else
+                "Switch to the Color Zones tab to paint keys. On this tab, use "
+                "the tab's own colour buttons and swatches.")
         # selections are independent between the tabs
         self._render_keyboard()
 
@@ -2200,6 +2876,9 @@ def main():
         QMessageBox.critical(None, "Startup error", str(e))
         sys.exit(1)
     w, h = win.sized_for_keyboard()
+    # hard stop: never let the window shrink past the keyboard, and open at
+    # exactly that minimum rather than something taller
+    win.setMinimumSize(w, h)
     win.resize(w, h)
     win.show()
     sys.exit(app.exec())

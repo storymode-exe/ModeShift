@@ -168,6 +168,51 @@ def _normalize_effect(eff):
     return out
 
 
+_KEY_STATE_TYPES = ("cooldown", "toggle")
+_READY_SIGNALS = ("solid", "blink", "breathe")
+
+
+def _normalize_key_state(ks):
+    """Validate one key-state indicator (cooldown or toggle), or None.
+
+    cooldown: press starts a timer. The key shows active_color, optionally
+    stepping through `stages` colors as it runs down, then signals ready.
+    toggle:   press flips through `colors` and stays there.
+
+    Both track YOUR KEYPRESSES only, not the game's real state, so they can
+    drift. Pressing the key again re-syncs a toggle; the next press re-syncs a
+    cooldown."""
+    if not isinstance(ks, dict):
+        return None
+    t = ks.get("type")
+    if t not in _KEY_STATE_TYPES:
+        return None
+    if t == "cooldown":
+        stages = [c for c in ks.get("stages", []) if isinstance(c, str)][:4]
+        sig = ks.get("ready_signal", "solid")
+        return {
+            "type": "cooldown",
+            "duration_seconds": max(0.1, float(ks.get("duration_seconds", 30.0))),
+            "active_color": ks.get("active_color", "FF2A00"),
+            # smoothly blend the on-cooldown colour toward the ready colour as
+            # the timer runs down, so the key itself reads as a progress bar
+            "countdown_fade": bool(ks.get("countdown_fade", True)),
+            "stages": stages,
+            "ready_color": ks.get("ready_color", "00FF66"),
+            "ready_signal": sig if sig in _READY_SIGNALS else "solid",
+            "ready_seconds": max(0.0, float(ks.get("ready_seconds", 2.0))),
+            # when not counting down the key sits at its ready color, so an
+            # ability that's available is always visibly "ready" instead of
+            # falling back to the zone colour underneath
+            "idle_color": ks.get("idle_color") or ks.get("ready_color", "00FF66"),
+        }
+    colors = [c for c in ks.get("colors", []) if isinstance(c, str)][:8]
+    if len(colors) < 2:
+        colors = (colors or ["00FF66"]) + ["202020"]
+    return {"type": "toggle", "colors": colors,
+            "start_index": max(0, min(len(colors) - 1, int(ks.get("start_index", 0))))}
+
+
 def _normalize_mode(mode: dict) -> dict:
     mode = _clean(mode)
     mode.setdefault("base_color", "000000")
@@ -215,16 +260,28 @@ def _normalize_mode(mode: dict) -> dict:
     # loose per-key colors (set directly, not via a zone). key name -> hex.
     keys = mode.get("keys", {}) or {}
     mode["keys"] = {k: v for k, v in keys.items() if isinstance(v, str)}
+
+    # per-key state indicators (cooldown / toggle), per mode
+    states = {}
+    for key, ks in (mode.get("key_states", {}) or {}).items():
+        n = _normalize_key_state(ks)
+        if n is not None:
+            states[key] = n
+    if states:
+        mode["key_states"] = states
+    else:
+        mode.pop("key_states", None)
     return mode
 
 
 def mode_has_effects(mode: dict) -> bool:
-    """True if any zone in the mode carries an animated effect."""
+    """True if the mode needs the animated render loop (any zone effect, or
+    any key-state indicator)."""
     for z in mode.get("zones", []):
         e = z.get("effect")
         if isinstance(e, dict) and e.get("type") not in (None, "none"):
             return True
-    return False
+    return bool(mode.get("key_states"))
 
 
 def _normalize_binding(b):

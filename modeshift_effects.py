@@ -66,6 +66,7 @@ class EffectEngine:
         self._base = [RGBColor(0, 0, 0)] * self.num
         self._layers = []          # bottom -> top render order
         self._reactive_of = {}     # led_idx -> top-most reactive layer for that key
+        self._key_states = {}      # led_idx -> cooldown/toggle indicator state
         self._fps = 60
         self._base_dirty = True
 
@@ -133,6 +134,31 @@ class EffectEngine:
                         reactive_of[i] = layer
             self._layers = layers
             self._reactive_of = reactive_of
+
+            # per-key state indicators (cooldown / toggle) sit above everything
+            states = {}
+            for key, ks in (mode.get("key_states") or {}).items():
+                i = self.led_lookup.get(key.lower())
+                if i is None:
+                    continue
+                st = dict(ks)
+                if ks["type"] == "cooldown":
+                    st["started"] = None      # not running until pressed
+                else:
+                    st["index"] = ks.get("start_index", 0)
+                states[i] = st
+            self._key_states = states
+            self._base_dirty = True
+
+    def reset_key_states(self):
+        """Snap every indicator back to its default (used to re-sync after the
+        game and the keyboard disagree)."""
+        with self._lock:
+            for st in self._key_states.values():
+                if st["type"] == "cooldown":
+                    st["started"] = None
+                else:
+                    st["index"] = st.get("start_index", 0)
             self._base_dirty = True
 
     # -- keypress feed -----------------------------------------------------
@@ -143,6 +169,14 @@ class EffectEngine:
         with self._lock:
             if not self._running.is_set():
                 return
+            # key-state indicators: a press starts a cooldown or flips a toggle
+            st = self._key_states.get(led_idx)
+            if st is not None:
+                if st["type"] == "cooldown":
+                    st["started"] = time.monotonic()
+                else:
+                    st["index"] = (st["index"] + 1) % len(st["colors"])
+                self._base_dirty = True   # a toggle is static: force one repaint
             layer = self._reactive_of.get(led_idx)
             if layer is None:
                 return
@@ -225,6 +259,54 @@ class EffectEngine:
                     continue
                 frame[i] = _blend(frame[i], col, a)
 
+    def _render_key_states(self, frame, now):
+        """Draw cooldown/toggle indicators over everything else."""
+        for i, st in self._key_states.items():
+            if i >= len(frame):
+                continue
+            if st["type"] == "toggle":
+                frame[i] = rc.hex_to_rgbcolor(st["colors"][st["index"]])
+                continue
+            started = st.get("started")
+            if started is None:
+                if st.get("idle_color"):
+                    frame[i] = rc.hex_to_rgbcolor(st["idle_color"])
+                continue
+            elapsed = now - started
+            dur = st["duration_seconds"]
+            if elapsed < dur:
+                stages = st.get("stages") or []
+                if stages:
+                    # explicit stage colors step through the countdown
+                    step = min(len(stages) - 1, int(elapsed / dur * len(stages)))
+                    frame[i] = rc.hex_to_rgbcolor(stages[step])
+                elif st.get("countdown_fade", True):
+                    # blend on-cooldown -> ready so the key shows time remaining
+                    frame[i] = _blend(rc.hex_to_rgbcolor(st["active_color"]),
+                                      rc.hex_to_rgbcolor(st["ready_color"]),
+                                      elapsed / dur)
+                else:
+                    frame[i] = rc.hex_to_rgbcolor(st["active_color"])
+                continue
+            # ready: signal for ready_seconds (0 = signal until pressed again)
+            ready_for = elapsed - dur
+            window = st.get("ready_seconds", 2.0)
+            if window and ready_for > window:
+                st["started"] = None
+                if st.get("idle_color"):
+                    frame[i] = rc.hex_to_rgbcolor(st["idle_color"])
+                continue
+            col = rc.hex_to_rgbcolor(st["ready_color"])
+            sig = st.get("ready_signal", "solid")
+            if sig == "blink":
+                if (ready_for % 0.6) < 0.3:
+                    frame[i] = col
+            elif sig == "breathe":
+                a = (1 - math.cos(2 * math.pi * ready_for / 1.5)) / 2
+                frame[i] = _blend(frame[i], col, a)
+            else:
+                frame[i] = col
+
     def _has_animation(self) -> bool:
         # reactive/twinkle are only "busy" when something is active; the
         # continuous effects always need frames.
@@ -234,6 +316,10 @@ class EffectEngine:
             if layer["type"] == "reactive" and layer["presses"]:
                 return True
             if layer["type"] == "twinkle" and (layer["active"] or layer["density"] > 0):
+                return True
+        # toggles are static once set, but a running cooldown needs frames
+        for st in self._key_states.values():
+            if st["type"] == "cooldown" and st.get("started") is not None:
                 return True
         return False
 
@@ -246,6 +332,8 @@ class EffectEngine:
             frame = list(self._base)
             for layer in self._layers:      # bottom -> top
                 self._render_layer(layer, frame, now)
+            if self._key_states:            # indicators sit above everything
+                self._render_key_states(frame, now)
             self._base_dirty = False
             return frame
 

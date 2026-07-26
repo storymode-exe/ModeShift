@@ -57,7 +57,8 @@ class Watcher:
         self.client = None
         self.device = None
         self.led_lookup: dict = {}
-        self._reactive = None              # fx.ReactiveEngine, created on connect
+        self._reactive = None              # fx.EffectEngine, created on connect
+        self._held = set()                 # keys currently down (for combos)
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._manual = AUTO  # AUTO, or a profile name to force
@@ -70,6 +71,20 @@ class Watcher:
         # previous session doesn't fire on startup
         self._cmd_mtime = self._command_mtime()
         self._connect()
+
+    def _reset_key(self):
+        """The optional 'reset key states' shortcut from settings.json, read
+        fresh so the editor can change it without a full restart. Returns a
+        list of key names (a combo like Ctrl + Shift + R), or None."""
+        try:
+            import json
+            path = self.config_path.parent / "settings.json"
+            raw = (json.loads(path.read_text()).get("reset_key") or "").strip()
+            if not raw:
+                return None
+            return [k.strip() for k in raw.split("+") if k.strip()]
+        except Exception:
+            return None
 
     def _command_mtime(self) -> float:
         try:
@@ -304,7 +319,17 @@ class Watcher:
                         if key_name is None:
                             continue
                         pressed = (event.value == 1)
+                        # track what's currently held so the reset shortcut can
+                        # be a combo (for example Ctrl + Shift + R)
+                        if pressed:
+                            self._held.add(key_name)
+                        else:
+                            self._held.discard(key_name)
                         if pressed and self._reactive is not None:
+                            combo = self._reset_key()
+                            if combo and all(k in self._held for k in combo):
+                                self._reactive.reset_key_states()
+                                print("[modeshift] key states reset", file=sys.stderr)
                             self._reactive.feed_key(self.led_lookup.get(key_name.lower()))
                         try:
                             self.handle_key_event(key_name, pressed=pressed)
@@ -345,6 +370,12 @@ def build_tray(watcher: Watcher):
     def on_pause(icon, item):
         watcher.resume() if watcher.is_paused() else watcher.pause()
 
+    def on_reset_states(icon, item):
+        """Snap cooldown/toggle indicators back to default when they drift out
+        of sync with what's actually happening in the game."""
+        if watcher._reactive is not None:
+            watcher._reactive.reset_key_states()
+
     def on_reload(icon, item):
         try:
             watcher.reload_config()
@@ -381,6 +412,7 @@ def build_tray(watcher: Watcher):
                              checked=lambda item: watcher._manual == AUTO),
             *profile_items,
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Reset key states", on_reset_states),
             pystray.MenuItem("Reload games.json", on_reload),
             pystray.MenuItem("Quit", on_quit),
         )
