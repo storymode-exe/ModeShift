@@ -24,6 +24,7 @@ Run with --list-leds to print every LED name this device reports:
     python3 modeshift_watcher.py --list-leds
 """
 
+import os
 import sys
 import threading
 import time
@@ -444,6 +445,29 @@ def main():
     if "--list-leds" in sys.argv:
         list_leds(config_path)
         return
+
+    # quick check that window detection works on this desktop, without needing
+    # OpenRGB or the tray: prints the focused window every second
+    if "--detect-test" in sys.argv:
+        print(f"session : {os.environ.get('XDG_SESSION_TYPE', '(unset)')}")
+        print(f"backend : {rc.detect_backend() or 'NONE FOUND'}")
+        print("Focus other windows to see what ModeShift reads. Ctrl+C to stop.\n")
+        try:
+            while True:
+                try:
+                    result = rc.get_active_window()
+                except RuntimeError as e:
+                    print(e)
+                    return
+                if result is None:
+                    print("  (could not read the focused window)")
+                else:
+                    win_class, pid = result
+                    print(f"  class={win_class!r}  pid={pid}  "
+                          f"process={rc.process_name_for_pid(pid)!r}")
+                time.sleep(1)
+        except KeyboardInterrupt:
+            return
 
     # --wait: retry the OpenRGB connection for ~30s. Used by the autostart
     # entry so a slightly-slower OpenRGB SDK server on login doesn't cause a

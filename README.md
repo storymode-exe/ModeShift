@@ -1,5 +1,3 @@
-
-
 # ModeShift
 
 **RGB lighting profiles for OpenRGB keyboards on Linux.**
@@ -65,8 +63,7 @@ Detection cues, watcher poll interval, keyboard size, and profile import/export.
   keyboard countdown and an optional sound.
 - **Import and export profiles** as portable `.modeshift` files, so you can back
   them up or share them.
-
-https://github.com/user-attachments/assets/0c7e1408-f6f9-44cd-9a2d-71e11c5da39a
+- **Adjustable keyboard size** in the editor (100 to 200%).
 
 ## How it works
 
@@ -87,7 +84,8 @@ zone and matrix data.
 - **OpenRGB** with the SDK Server running (OpenRGB, SDK Server tab, Start Server).
 - **Python 3.9+**.
 - The Python packages in `requirements.txt`.
-- For automatic game detection on **KDE Plasma Wayland**: `kdotool`.
+- For automatic game detection: `xprop` on X11 (standard X11 utilities) or
+  `kdotool` on KDE Plasma Wayland.
 - For **key functions, type lighting, and key states**: your user in the `input`
   group.
 
@@ -109,21 +107,21 @@ System packages by distro:
 **Arch / CachyOS / Manjaro**
 
 ```bash
-sudo pacman -S openrgb python-pyside6
-paru -S kdotool   # or yay; kdotool is in the AUR, for KDE Wayland window detection
+sudo pacman -S openrgb python-pyside6 xorg-xprop
+paru -S kdotool   # or yay; only needed on KDE Wayland
 ```
 
 **Debian / Ubuntu / Pop!_OS**
 
 ```bash
-sudo apt install openrgb python3-pyside6.qtwidgets python3-evdev
+sudo apt install openrgb python3-pyside6.qtwidgets python3-evdev x11-utils
 # kdotool: build from source or grab a release (needed only on KDE Wayland)
 ```
 
 **Fedora**
 
 ```bash
-sudo dnf install openrgb python3-pyside6
+sudo dnf install openrgb python3-pyside6 xprop
 # kdotool: build from source or grab a release (needed only on KDE Wayland)
 ```
 
@@ -167,8 +165,11 @@ List your keyboard's exact key names:
 python3 modeshift_watcher.py --list-leds
 ```
 
-Install the app-menu entries and log-in autostart (rewrites the paths to wherever
-you cloned the repo):
+To start the watcher automatically at login, tick **Start the watcher when I log
+in** in the editor's Settings tab.
+
+To also add both apps to your application menu (and set autostart from the
+terminal instead), run:
 
 ```bash
 ./install_desktop.sh
@@ -193,9 +194,25 @@ Everything except automatic game detection is desktop-agnostic: the editor, manu
 profile switching from the tray, modes, zones, effects, key functions, and key
 states all work regardless of your compositor.
 
-Automatic "focused window" detection currently uses `kdotool`, which targets **KDE
-Plasma on Wayland**. X11 desktops and other Wayland compositors are on the roadmap.
-Until then, on other desktops you can still drive everything manually from the tray.
+For automatic "focused window" detection, ModeShift picks a backend at runtime:
+
+| Session | Tool used | Notes |
+| --- | --- | --- |
+| X11 (any desktop) | `xprop` | Ships with the standard X11 utilities |
+| KDE Plasma Wayland | `kdotool` | Install from the AUR or your distro |
+| Other Wayland (GNOME, sway, ...) | `xprop` fallback | Works for XWayland windows; native Wayland windows are not yet detected |
+
+If neither tool is installed, ModeShift tells you which package to get and
+everything else keeps working; you just pick profiles from the tray yourself.
+
+To check detection on a new desktop:
+
+```bash
+python3 modeshift_watcher.py --detect-test
+```
+
+That prints your session type, the backend it chose, and the focused window once a
+second as you switch windows.
 
 ## Configuration
 

@@ -2,6 +2,26 @@
 
 All notable changes to ModeShift are documented here.
 
+## v1.4.0
+
+### Added
+- **X11 support for automatic game detection.** ModeShift picks its window
+  backend at runtime: `kdotool` on KDE Wayland, `xprop` on X11, and `xprop` as a
+  fallback on Wayland sessions without kdotool (which covers XWayland games).
+  No new dependency: `xprop` ships with the standard X11 utilities. Profiles and
+  match strings work exactly as before.
+- **Start the watcher when I log in**, a checkbox in Settings that writes or
+  removes the desktop autostart entry, so autostart no longer needs the
+  `install_desktop.sh` script.
+- `modeshift_watcher.py --detect-test` prints your session type, the chosen
+  backend, and the focused window once a second, for checking detection on a new
+  desktop without running the tray or OpenRGB.
+
+### Changed
+- If no window-detection tool is installed, ModeShift now says which package to
+  install instead of failing with a bare error, and manual profile switching from
+  the tray keeps working.
+
 ## v1.3.0
 
 ### Changed

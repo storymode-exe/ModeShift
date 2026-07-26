@@ -36,6 +36,9 @@ The old flat schema (default_layout + games) is auto-migrated on load.
 
 import copy
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -51,6 +54,9 @@ except Exception:  # enum missing/renamed in some versions -> fall back to matri
     _DEVICE_TYPE_KEYBOARD = None
 
 CONFIG_PATH = Path(__file__).parent / "games.json"
+
+_UNSET = object()
+_BACKEND = _UNSET          # cached window-detection tool, see detect_backend()
 
 DEFAULT_PROFILE_NAME = "Default"
 DEFAULT_MODE_NAME = "Mode 1"
@@ -665,30 +671,93 @@ def find_matrix_zone(device):
 
 # ------------------------------------------------- active window (KDE/Wayland) ---
 
+def _have(cmd: str) -> bool:
+    return shutil.which(cmd) is not None
+
+
+def detect_backend() -> str | None:
+    """Which tool to ask for the focused window.
+
+    'kdotool' on KDE Wayland, 'xprop' on X11 (including XWayland sessions that
+    expose DISPLAY), or None if neither tool is installed. Cached after the
+    first call."""
+    global _BACKEND
+    if _BACKEND is not _UNSET:
+        return _BACKEND
+    session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    wayland = session == "wayland" or bool(os.environ.get("WAYLAND_DISPLAY"))
+    x11 = session == "x11" or bool(os.environ.get("DISPLAY"))
+    order = ["kdotool", "xprop"] if wayland else ["xprop", "kdotool"]
+    if not wayland and not x11:
+        order = ["xprop", "kdotool"]
+    _BACKEND = next((c for c in order if _have(c)), None)
+    return _BACKEND
+
+
+def _run(args, timeout=2) -> str:
+    return subprocess.run(args, capture_output=True, text=True,
+                          timeout=timeout).stdout.strip()
+
+
+def parse_xprop_active_window(text: str) -> str | None:
+    """'_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3c00007, 0x0' -> '0x3c00007'."""
+    m = re.search(r"#\s*(0x[0-9a-fA-F]+)", text or "")
+    win = m.group(1) if m else None
+    return None if win in (None, "0x0") else win
+
+
+def parse_xprop_class(text: str) -> str:
+    """'WM_CLASS(STRING) = "instance", "Class"' -> 'instance Class'.
+
+    Both parts are returned because games vary in which one carries the useful
+    name, and matching is a lowercase substring test either way."""
+    parts = re.findall(r'"([^"]*)"', text or "")
+    return " ".join(p for p in parts if p)
+
+
+def parse_xprop_pid(text: str) -> int:
+    m = re.search(r"=\s*(\d+)", text or "")
+    return int(m.group(1)) if m else -1
+
+
 def get_active_window() -> tuple[str, int] | None:
+    """(window class, pid) for the focused window, or None if it can't be read."""
+    backend = detect_backend()
+    if backend is None:
+        raise RuntimeError(
+            "No window-detection tool found. Install kdotool for KDE Wayland "
+            "(AUR: 'paru -S kdotool'), or xprop for X11 (package 'xorg-xprop' "
+            "on Arch, 'x11-utils' on Debian/Ubuntu). Without one of these, "
+            "automatic game detection is off; you can still pick profiles from "
+            "the tray."
+        )
     try:
-        win_id = subprocess.run(
-            ["kdotool", "getactivewindow"],
-            capture_output=True, text=True, timeout=2,
-        ).stdout.strip()
+        if backend == "kdotool":
+            win_id = _run(["kdotool", "getactivewindow"])
+            if not win_id:
+                return None
+            win_class = _run(["kdotool", "getwindowclassname", win_id])
+            pid_str = _run(["kdotool", "getwindowpid", win_id])
+            return (win_class, int(pid_str) if pid_str.isdigit() else -1)
+
+        # X11 via xprop only: no extra dependency beyond the standard x11 utils
+        win_id = parse_xprop_active_window(
+            _run(["xprop", "-root", "_NET_ACTIVE_WINDOW"]))
         if not win_id:
             return None
-        win_class = subprocess.run(
-            ["kdotool", "getwindowclassname", win_id],
-            capture_output=True, text=True, timeout=2,
-        ).stdout.strip()
-        pid_str = subprocess.run(
-            ["kdotool", "getwindowpid", win_id],
-            capture_output=True, text=True, timeout=2,
-        ).stdout.strip()
-        pid = int(pid_str) if pid_str.isdigit() else -1
-        return (win_class, pid)
+        info = _run(["xprop", "-id", win_id, "WM_CLASS", "_NET_WM_PID"])
+        cls, pid = "", -1
+        for line in info.splitlines():
+            if line.startswith("WM_CLASS"):
+                cls = parse_xprop_class(line)
+            elif line.startswith("_NET_WM_PID"):
+                pid = parse_xprop_pid(line)
+        return (cls, pid)
+    except (subprocess.TimeoutExpired, ValueError):
+        return None
     except FileNotFoundError:
-        raise RuntimeError(
-            "kdotool not found on PATH. Install it (AUR: 'yay -S kdotool') for "
-            "active-window detection on KDE Wayland."
-        )
-    except subprocess.TimeoutExpired:
+        global _BACKEND
+        _BACKEND = _UNSET          # tool vanished; re-detect next time
         return None
 
 

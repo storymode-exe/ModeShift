@@ -55,12 +55,14 @@ import modeshift_common as rc
 import modeshift_effects as fx
 
 APP_NAME = "ModeShift"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
 
 WATCHER_SCRIPT = Path(__file__).parent / "modeshift_watcher.py"
+AUTOSTART_FILE = (Path.home() / ".config" / "autostart" /
+                  "modeshift-watcher.desktop")
 
 CUSTOM_COLORS_PATH = rc.CONFIG_PATH.parent / "custom_colors.json"
 SETTINGS_PATH = rc.CONFIG_PATH.parent / "settings.json"
@@ -1183,6 +1185,17 @@ class MainWindow(QMainWindow):
 
         # --- Watcher ---
         v.addWidget(QLabel("<b>Watcher</b>"))
+
+        self.set_autostart_chk = QCheckBox("Start the watcher when I log in")
+        self.set_autostart_chk.setToolTip(
+            "Writes a desktop autostart entry so the tray watcher launches "
+            "automatically. The editor does not start on login, only the watcher.")
+        self.set_autostart_chk.setChecked(AUTOSTART_FILE.exists())
+        self.set_autostart_chk.toggled.connect(self._on_autostart_toggled)
+        v.addWidget(self.set_autostart_chk)
+        self.autostart_note = QLabel("")
+        v.addWidget(self.autostart_note)
+        self._sync_autostart_note()
         poll_row = QHBoxLayout()
         poll_row.addWidget(QLabel("Poll interval (seconds)"))
         self.set_poll_spin = QSpinBox()
@@ -1258,6 +1271,43 @@ class MainWindow(QMainWindow):
 
         v.addStretch(1)
         return box
+
+    def _sync_autostart_note(self):
+        if AUTOSTART_FILE.exists():
+            self.autostart_note.setText(
+                f"<i>On. Launching from:<br><tt>{WATCHER_SCRIPT}</tt></i>")
+        else:
+            self.autostart_note.setText(
+                "<i>Off. The watcher only runs when you start it yourself.</i>")
+
+    def _on_autostart_toggled(self, on):
+        """Create or remove the desktop autostart entry for the watcher."""
+        try:
+            if on:
+                AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+                AUTOSTART_FILE.write_text(
+                    "[Desktop Entry]\n"
+                    "Type=Application\n"
+                    f"Name={APP_NAME} Watcher\n"
+                    "GenericName=Keyboard Lighting Daemon\n"
+                    "Comment=Switches keyboard lighting per focused game\n"
+                    # --wait retries the OpenRGB connection: on login the SDK
+                    # server is often a moment behind us
+                    f"Exec=python3 {WATCHER_SCRIPT} --wait\n"
+                    "Icon=input-keyboard\n"
+                    "Terminal=false\n"
+                    "Categories=Utility;\n"
+                    "X-GNOME-Autostart-enabled=true\n"
+                    "X-KDE-autostart-after=panel\n"
+                    "StartupNotify=false\n"
+                )
+                self._status("The watcher will start automatically on login.")
+            else:
+                AUTOSTART_FILE.unlink(missing_ok=True)
+                self._status("Removed the watcher from login startup.")
+        except OSError as e:
+            QMessageBox.warning(self, "Autostart", f"Could not update autostart:\n{e}")
+        self._sync_autostart_note()
 
     def _on_slots_changed(self, _idx):
         val = self.set_slots_combo.currentData()
