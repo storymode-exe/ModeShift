@@ -692,7 +692,7 @@ class MainWindow(QMainWindow):
 
         v.addWidget(self._hline())
 
-        v.addWidget(QLabel("<b>Modes</b>  (active = applied by watcher)"))
+        v.addWidget(QLabel("<b>Modes</b>"))
         self.mode_list = QListWidget()
         self.mode_list.setMinimumHeight(64)
         self.mode_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
@@ -708,7 +708,10 @@ class MainWindow(QMainWindow):
             mbtns.addWidget(b)
         v.addLayout(mbtns)
 
-        self.set_active_btn = QPushButton("Set selected mode active")
+        self.set_active_btn = QPushButton("● Start the profile on this mode")
+        self.set_active_btn.setToolTip(
+            "When this profile is applied, the watcher starts on this mode. "
+            "Key functions can switch modes afterwards without changing it.")
         self.set_active_btn.clicked.connect(self._on_set_active_mode)
         v.addWidget(self.set_active_btn)
 
@@ -1549,7 +1552,8 @@ class MainWindow(QMainWindow):
             "its <b>Match string</b>, or just click <i>Detect from focused window</i>, "
             "alt-tab into the game, and it fills it for you.<br><br>"
             "<b>4. Modes.</b> A profile can hold several modes (e.g. Star Citizen: Flight, "
-            "On Foot). The <b>active</b> mode is what the watcher shows.<br><br>"
+            "On Foot). The one marked ● is where the profile <b>starts</b>; key "
+            "functions switch between them while you play, without changing that.<br><br>"
             "<b>5. Functions.</b> On the Functions tab, click one key and bind it to change "
             "MODE (green) or PROFILE (red) on press and/or release, for momentary, "
             "hold-to-light effects like Star Citizen's flight vs on-foot lighting.<br><br>"
@@ -2169,7 +2173,7 @@ class MainWindow(QMainWindow):
     def _on_set_active_mode(self):
         self._profile()["active_mode"] = self.current_mode_name
         self._reload_modes()
-        self._status(f"'{self.current_mode_name}' is now the active mode (unsaved).")
+        self._status(f"This profile now starts on '{self.current_mode_name}' (unsaved).")
 
     # ---------------------------------------------------- selection / tiles ---
 
