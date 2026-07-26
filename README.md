@@ -2,75 +2,80 @@
 
 **RGB lighting profiles for OpenRGB keyboards on Linux.**
 
-https://github.com/user-attachments/assets/d59fe3e0-d4f1-4e25-af7e-bf12bf77eff5
-
 ModeShift gives your OpenRGB-controllable keyboard per-key lighting profiles that
-switch automatically when you change games, plus modes you can flip through and
-hold-to-switch key bindings. Think of it as an OpenRGB-style lighting profile
-manager focused on gaming, built for Linux desktops (developed on KDE Plasma
-Wayland).
+switch automatically when you change games, plus animated effects, modes you can
+flip between, and per-key indicators for cooldowns and toggles. Think of it as an
+OpenRGB-style lighting profile manager focused on gaming, built for Linux desktops
+(developed on KDE Plasma Wayland).
 
 It is not a replacement for OpenRGB. OpenRGB does the hardware talking; ModeShift
-sits on top of it and manages the lighting logic (profiles, modes, zones,
-per-game switching).
+sits on top of it and manages the lighting logic.
 
-![ModeShift switching keyboard lighting per game](docs/modeshift_BG3.gif)
-
-## Features
-
-- **Per-zone lighting effects**: type lighting, breathing, blinking, color cycle, and twinkle, each with its own colors (up to 8), layered per zone.
-- **Per-key lighting** on a live picture of your actual keyboard, drawn from
-  OpenRGB's own layout data (so it works on many OpenRGB keyboards, not just one).
-- **Profiles** tied to games. The watcher detects the focused window and applies
-  the matching profile automatically.
-- **Modes** within a profile (for example Flight, On Foot, Mining) that you can
-  switch between.
-- **Zones** (named key groups with a color and brightness) over a base color, or
-  color individual keys directly with no zone required.
-- **Functions**: bind a physical key to change mode or profile on press and/or
-  release, including momentary hold-to-switch lighting.
-- **HSV color wheel** with a brightness slider and up to 64 saved custom colors.
-- **Detect from focused window**: a countdown then auto-fills a game's match
-  string from whatever window is focused, with an optional sound and a keyboard
-  flash finale.
-- **System tray daemon** with pause, manual profile override, and reload.
-- **Settings** for the ding, ding volume, countdown lights, countdown length, and
-  watcher poll interval.
+<!-- Drag your demo video in here on github.com to embed it above the screenshots -->
 
 ## Screenshots
 
 ### Color Zones
-Per-key lighting painted on a live map of your actual keyboard.
+Per-key lighting painted on a live map of your actual keyboard. Zones are layers
+you can reorder, and each one can carry its own effect and colors.
 
-![Color Zones](docs/screenshots/01-color-zones.png)
+![Color Zones](docs/screenshots/modeshift_colorzones.png)
 
 ### Functions
-Bind a key to change mode or profile on press and release.
+Bind a key to change mode or profile on press and release, for momentary
+hold-to-light setups.
 
-![Functions](docs/screenshots/02-functions.png)
+![Functions](docs/screenshots/modeshift_functions.png)
+
+### Key States
+Give a key a cooldown timer or an on/off toggle, so it doubles as a status light
+for the game you are playing.
+
+![Key States](docs/screenshots/modeshift_keystates.png)
 
 ### Settings
-Toggle the ding, countdown lights, ding volume, countdown length, and watcher poll interval.
+Detection cues, watcher poll interval, keyboard size, and profile import/export.
 
-![Settings](docs/screenshots/03-settings.png)
+![Settings](docs/screenshots/modeshift_settings.png)
 
-### How-To
-The built-in guide, including the modes vs profiles explanation.
+## Features
 
-![How-To](docs/screenshots/04-howto.png)
+- **Per-key lighting** on a live map of your actual keyboard, drawn from OpenRGB's
+  own layout data, so it works on many OpenRGB keyboards, not just one.
+- **Profiles per game**, applied automatically by a tray watcher that follows your
+  focused window.
+- **Modes** inside a profile (for example Flight, On Foot, Mining) with
+  hold-a-key-to-switch bindings.
+- **Zones as layers**: named key groups you can reorder, with the top of the list
+  winning where zones overlap. Zones can also be transparent, carrying only an
+  effect.
+- **Per-zone effects**: type lighting (keys light up as you type), breathing,
+  blinking, color cycle (rainbow or your own colors), and twinkle. Each effect
+  takes up to 8 colors and cycles through them.
+- **Key States**: give a key a **cooldown** (press starts a timer, the key fades
+  from the cooldown color toward the ready color, then signals ready) or a
+  **toggle** (press flips it between colors and it stays there). Handy for ability
+  cooldowns and for shields or engines on/off.
+- **HSV color picker** with a brightness slider and up to 64 saved custom colors.
+- **Detect from focused window** to fill in a game's match string for you, with a
+  keyboard countdown and an optional sound.
+- **Import and export profiles** as portable `.modeshift` files, so you can back
+  them up or share them.
+- **Adjustable keyboard size** in the editor (100 to 200%).
 
 ## How it works
 
 ModeShift is two programs sharing one config file (`games.json`):
 
-- `modeshift_editor.py` is the GUI. You edit profiles, modes, zones, and per-key
-  colors, and bind functions.
+- `modeshift_editor.py` is the GUI. You edit profiles, modes, zones, effects, key
+  functions, and key states.
 - `modeshift_watcher.py` is the background tray daemon. It watches the focused
-  window and applies the right profile, or whatever you pick from the tray. This
-  is what actually lights the keyboard.
+  window, applies the right profile, runs the effects, and reads your keypresses
+  for type lighting and key states. This is what actually lights the keyboard.
 
-`modeshift_common.py` holds the shared logic. `diagnose_zones.py` is a one-off helper
-that dumps your keyboard's zone/matrix data.
+`modeshift_common.py` holds the shared logic and `modeshift_effects.py` the
+effects engine. `diagnose_zones.py` is a one-off helper that dumps your keyboard's
+zone and matrix data.
 
 ## Requirements
 
@@ -78,15 +83,16 @@ that dumps your keyboard's zone/matrix data.
 - **Python 3.9+**.
 - The Python packages in `requirements.txt`.
 - For automatic game detection on **KDE Plasma Wayland**: `kdotool`.
-- For **hold-to-switch key functions**: your user in the `input` group.
+- For **key functions, type lighting, and key states**: your user in the `input`
+  group.
 
 ## Install
 
 Clone the repo, then install the Python dependencies:
 
 ```bash
-git clone https://github.com/storymode-exe/modeshift.git
-cd modeshift
+git clone https://github.com/storymode-exe/ModeShift.git
+cd ModeShift
 pip install -r requirements.txt
 ```
 
@@ -116,9 +122,12 @@ sudo dnf install openrgb python3-pyside6
 # kdotool: build from source or grab a release (needed only on KDE Wayland)
 ```
 
-### Key functions setup (all distros)
+### Key input setup (all distros)
 
-This step is **not** distro-specific. Everyone who wants the hold-to-switch key functions (change mode or profile on a keypress) must do it, no matter the distro. The watcher reads raw keyboard input, which requires your user to be in the `input` group:
+This step is **not** distro-specific. Everyone who wants hold-to-switch key
+functions, type lighting, or key states must do it, no matter the distro. The
+watcher reads raw keyboard input, which requires your user to be in the `input`
+group:
 
 ```bash
 sudo usermod -aG input $USER      # then log out and back in
@@ -145,7 +154,7 @@ python3 modeshift_watcher.py
 ```
 
 A tray icon appears. Right-click to pause, choose Auto (detect game), force a
-specific profile, reload after editing, or quit.
+specific profile, reset key states, reload after editing, or quit.
 
 List your keyboard's exact key names:
 
@@ -160,34 +169,53 @@ you cloned the repo):
 ./install_desktop.sh
 ```
 
+## How the layers work
+
+Everything is drawn bottom up:
+
+1. the mode's **base color**
+2. **zones** (the top zone in the list wins where they overlap)
+3. **direct key colors** set on individual keys
+4. **zone effects**
+5. **Key State colors** (cooldown and toggle)
+
+So a Key State color always covers whatever that key was set to in Color Zones.
+That is deliberate: an ability's status should always be readable.
+
 ## Linux desktop support
 
-Everything except automatic game detection is desktop-agnostic: the editor,
-manual profile switching from the tray, modes, zones, and key functions all work
-regardless of your compositor.
+Everything except automatic game detection is desktop-agnostic: the editor, manual
+profile switching from the tray, modes, zones, effects, key functions, and key
+states all work regardless of your compositor.
 
-Automatic "focused window" detection currently uses `kdotool`, which targets
-**KDE Plasma on Wayland**. X11 desktops and other Wayland compositors are on the
-roadmap (the plan is to add `xdotool`/`wmctrl` for X11 and a compositor-neutral
-path where possible). Until then, on other desktops you can still drive everything
-manually from the tray.
+Automatic "focused window" detection currently uses `kdotool`, which targets **KDE
+Plasma on Wayland**. X11 desktops and other Wayland compositors are on the roadmap.
+Until then, on other desktops you can still drive everything manually from the tray.
 
 ## Configuration
 
 ModeShift stores its data next to the scripts:
 
-- `games.json` is your profiles, modes, zones, and functions (per device).
+- `games.json` is your profiles, modes, zones, effects, functions, and key states.
 - `custom_colors.json` is your saved swatches.
-- `settings.json` is the editor/watcher settings.
-- `watcher_command.json` is a small file the editor uses to nudge the running
-  watcher.
+- `settings.json` is the editor and watcher settings.
+- `watcher_command.json` is a small file the editor uses to nudge the running watcher.
 
-All four are per-user and are git-ignored, so your setup never gets committed.
+All four are per-user and git-ignored, so your setup never gets committed. Use
+**Settings, Import / export profiles** to back up or share individual profiles.
+
+## A note on key states
+
+Cooldowns and toggles follow **your keypresses**, not the game. ModeShift cannot
+see whether an ability actually fired, whether a shield was knocked offline, or
+whether you toggled something with the mouse, so an indicator can drift out of
+sync. Press the key again to re-sync a toggle, or set a re-sync shortcut (a key or
+a combo) on the Key States tab.
 
 ## Credits
 
 Huge thanks to **naaraxi** for the Keychron OpenRGB plugin and the firmware work
-behind it. Without it my keyboard would not communicate with OpenRGB at all, and
+behind it. Without him my keyboard would not communicate with OpenRGB at all, and
 ModeShift would never have crossed my mind to build.
 https://github.com/naaraxi/keychron_ultra_openrgb
 
