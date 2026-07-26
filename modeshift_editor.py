@@ -45,7 +45,7 @@ try:
         QHBoxLayout, QPushButton, QComboBox, QLineEdit, QLabel,
         QMessageBox, QInputDialog, QScrollArea, QCheckBox,
         QFrame, QListWidget, QListWidgetItem, QSlider, QSpinBox, QGroupBox,
-        QRubberBand, QTabWidget, QDialog, QFileDialog,
+        QRubberBand, QTabWidget, QDialog, QFileDialog, QMenu,
     )
 except ImportError:
     print("Missing dependency: PySide6. Install with: pip install PySide6", file=sys.stderr)
@@ -55,7 +55,7 @@ import modeshift_common as rc
 import modeshift_effects as fx
 
 APP_NAME = "ModeShift"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
@@ -79,6 +79,7 @@ DEFAULT_SETTINGS = {
     "detect_seconds": 10,
     "finale_flash": True,
     "keyboard_scale": 100,
+    "saved_color_slots": 24,
 }
 CUSTOM_ROW = 8            # swatches per row
 CUSTOM_MAX = 64           # hard cap on saved custom colors
@@ -572,6 +573,9 @@ class MainWindow(QMainWindow):
         color_panel.setFixedHeight(color_panel.sizeHint().height())
         bottom.addWidget(color_panel, alignment=Qt.AlignTop)
         root.addLayout(bottom, stretch=1)
+        # No explicit minimum here: the non-scrolling tabs already report their
+        # own minimum, and asking the tab widget for a sizeHint would include
+        # the long scrollable pages and blow the window up.
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -748,41 +752,45 @@ class MainWindow(QMainWindow):
         self.zone_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
         self.zone_list.currentRowChanged.connect(self._on_zone_selected)
         self.zone_list.itemDoubleClicked.connect(lambda _i: self._on_rename_zone())
+        # drag a zone up or down the layer stack, or use the arrow buttons
+        self.zone_list.setDragDropMode(QListWidget.InternalMove)
+        self.zone_list.setDefaultDropAction(Qt.MoveAction)
+        self.zone_list.model().rowsMoved.connect(self._on_zone_rows_moved)
+        # right-click for the same actions as the buttons
+        self.zone_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.zone_list.customContextMenuRequested.connect(self._on_zone_menu)
         v.addWidget(self.zone_list, stretch=1)   # grows when the window does
 
-        row1 = QHBoxLayout()
+        # reorder arrows stacked on the left, the four zone actions in a 2x2
+        self.zone_up_btn = QPushButton("▲")
+        self.zone_up_btn.setToolTip("Move this zone up (higher layer, wins on overlap). "
+                                    "You can also drag zones in the list.")
+        self.zone_up_btn.setFixedWidth(34)
+        self.zone_up_btn.clicked.connect(lambda: self._on_zone_move(-1))
+        self.zone_down_btn = QPushButton("▼")
+        self.zone_down_btn.setToolTip("Move this zone down (lower layer).")
+        self.zone_down_btn.setFixedWidth(34)
+        self.zone_down_btn.clicked.connect(lambda: self._on_zone_move(1))
+
         new_zone_btn = QPushButton("New zone from selection")
         new_zone_btn.clicked.connect(self._on_new_zone)
-        row1.addWidget(new_zone_btn)
         clear_btn = QPushButton("Clear selection")
         clear_btn.clicked.connect(self._on_clear_selection)
-        row1.addWidget(clear_btn)
-        v.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        rename_btn = QPushButton("Rename zone")
+        rename_btn = QPushButton("Rename")
         rename_btn.clicked.connect(self._on_rename_zone)
-        row2.addWidget(rename_btn)
-        del_btn = QPushButton("Delete zone")
+        del_btn = QPushButton("Delete")
         del_btn.clicked.connect(self._on_delete_zone)
-        row2.addWidget(del_btn)
-        v.addLayout(row2)
 
-        # layer reorder: the top of the list is the top layer (wins on overlap)
-        row3 = QHBoxLayout()
-        self.zone_up_btn = QPushButton("▲ Move up (higher layer)")
-        self.zone_up_btn.clicked.connect(lambda: self._on_zone_move(-1))
-        row3.addWidget(self.zone_up_btn)
-        self.zone_down_btn = QPushButton("▼ Move down")
-        self.zone_down_btn.clicked.connect(lambda: self._on_zone_move(1))
-        row3.addWidget(self.zone_down_btn)
-        v.addLayout(row3)
-
-        reset_btn = QPushButton("Reset selected keys to base color")
-        reset_btn.setToolTip("Remove direct colors from the selected keys "
-                             "(they fall back to their zone or the base color).")
-        reset_btn.clicked.connect(self._on_reset_keys)
-        v.addWidget(reset_btn)
+        btns = QGridLayout()
+        btns.addWidget(self.zone_up_btn,   0, 0)
+        btns.addWidget(new_zone_btn,       0, 1)
+        btns.addWidget(clear_btn,          0, 2)
+        btns.addWidget(self.zone_down_btn, 1, 0)
+        btns.addWidget(rename_btn,         1, 1)
+        btns.addWidget(del_btn,            1, 2)
+        btns.setColumnStretch(1, 1)
+        btns.setColumnStretch(2, 1)
+        v.addLayout(btns)
 
         # --- per-zone effect: pick a type, then its options appear ---
         eff = QGroupBox("Effect (selected zone)")
@@ -810,7 +818,6 @@ class MainWindow(QMainWindow):
         r.addWidget(QLabel("Fade:")); self.rx_fade = self._mk_spin(50, 5000, " ms", 50); r.addWidget(self.rx_fade)
         r.addWidget(QLabel("Peak:")); self.rx_peak = self._mk_spin(0, 100, " %", 5); r.addWidget(self.rx_peak)
         pv.addLayout(r)
-        pv.addWidget(QLabel(hint))
         self._eff_panels["reactive"] = p; ev.addWidget(p)
 
         # breathing: colors (cycle per breath), speed, min/max brightness
@@ -819,7 +826,6 @@ class MainWindow(QMainWindow):
         r = QHBoxLayout(); r.addWidget(QLabel("Speed:")); self.br_period = self._mk_spin(300, 10000, " ms", 100); r.addWidget(self.br_period); pv.addLayout(r)
         r = QHBoxLayout(); r.addWidget(QLabel("Min:")); self.br_min = self._mk_spin(0, 100, " %", 5); r.addWidget(self.br_min)
         r.addWidget(QLabel("Max:")); self.br_max = self._mk_spin(0, 100, " %", 5); r.addWidget(self.br_max); pv.addLayout(r)
-        pv.addWidget(QLabel(hint))
         self._eff_panels["breathing"] = p; ev.addWidget(p)
 
         # blinking: colors (cycle per blink), on/off timing
@@ -827,7 +833,6 @@ class MainWindow(QMainWindow):
         self.bl_colors_row = self._mk_colors_control(pv)
         r = QHBoxLayout(); r.addWidget(QLabel("On:")); self.bl_on = self._mk_spin(50, 5000, " ms", 50); r.addWidget(self.bl_on)
         r.addWidget(QLabel("Off:")); self.bl_off = self._mk_spin(50, 5000, " ms", 50); r.addWidget(self.bl_off); pv.addLayout(r)
-        pv.addWidget(QLabel(hint))
         self._eff_panels["blinking"] = p; ev.addWidget(p)
 
         # colorcycle: rainbow or custom stops, speed
@@ -836,8 +841,7 @@ class MainWindow(QMainWindow):
         self.cc_rainbow.stateChanged.connect(self._on_eff_param); pv.addWidget(self.cc_rainbow)
         r = QHBoxLayout(); r.addWidget(QLabel("Speed:")); self.cc_period = self._mk_spin(500, 20000, " ms", 100); r.addWidget(self.cc_period); pv.addLayout(r)
         self.cc_stops_row = self._mk_colors_control(pv)
-        pv.addWidget(QLabel("<i>Click a swatch to change it, right-click to remove. "
-                            "Colors used only when Rainbow is off.</i>"))
+        pv.addWidget(QLabel("<i>Colors used only when Rainbow is off.</i>"))
         self._eff_panels["colorcycle"] = p; ev.addWidget(p)
 
         # twinkle: colors (or random), density, fade
@@ -847,12 +851,19 @@ class MainWindow(QMainWindow):
         self.tw_rainbow.stateChanged.connect(self._on_eff_param); pv.addWidget(self.tw_rainbow)
         r = QHBoxLayout(); r.addWidget(QLabel("Density:")); self.tw_density = self._mk_spin(0, 100, " %", 5); r.addWidget(self.tw_density)
         r.addWidget(QLabel("Fade:")); self.tw_fade = self._mk_spin(100, 5000, " ms", 50); r.addWidget(self.tw_fade); pv.addLayout(r)
-        pv.addWidget(QLabel(hint))
         self._eff_panels["twinkle"] = p; ev.addWidget(p)
 
         ev.addWidget(QLabel(
-            "<i>Each zone has its own effect and colors. Select the whole board as "
-            "one zone for a full-keyboard effect.</i>"))
+            "<i>Add up to 8 colors; click a swatch to change it, right-click to "
+            "remove. Multiple colors cycle automatically.</i>"))
+        # Only one effect panel is visible at a time, so reserve room for the
+        # tallest of them: switching effects then never resizes the tab or
+        # pushes controls out of view.
+        tallest = max((p.minimumSizeHint().height() for p in self._eff_panels.values()),
+                      default=0)
+        if tallest:
+            for p in self._eff_panels.values():
+                p.setMinimumHeight(tallest)
         v.addWidget(eff)
 
         self.selection_label = QLabel("0 keys selected")
@@ -978,6 +989,13 @@ class MainWindow(QMainWindow):
             self._status(f"Couldn't save settings: {e}")
 
     @staticmethod
+    def _wrap_labels(inner: QWidget) -> QWidget:
+        """Let a panel's text reflow so it never needs horizontal scrolling."""
+        for lbl in inner.findChildren(QLabel):
+            lbl.setWordWrap(True)
+        return inner
+
+    @staticmethod
     def _scrollable(inner: QWidget) -> QWidget:
         """Wrap a panel in a scroll area so its content can't force the whole
         window taller; it scrolls vertically instead. Never scrolls sideways:
@@ -1083,6 +1101,13 @@ class MainWindow(QMainWindow):
                             "there. Two colors give a simple on/off. Click a swatch "
                             "to change it, right-click to remove.</i>"))
         self._ks_panels["toggle"] = p; v.addWidget(p)
+
+        # reserve room for the taller of the cooldown / toggle panels
+        tallest = max((p.minimumSizeHint().height() for p in self._ks_panels.values()),
+                      default=0)
+        if tallest:
+            for p in self._ks_panels.values():
+                p.setMinimumHeight(tallest)
 
         clear_btn = QPushButton("Remove key state from this key")
         clear_btn.clicked.connect(self._on_ks_clear)
@@ -1193,6 +1218,25 @@ class MainWindow(QMainWindow):
             "<i>Draws the keyboard bigger. The window grows to fit, up to your screen "
             "size. Reopen the editor to apply.</i>"))
 
+        slot_row = QHBoxLayout()
+        slot_row.addWidget(QLabel("Saved color slots"))
+        self.set_slots_combo = QComboBox()
+        for n in range(CUSTOM_ROW, CUSTOM_MAX + 1, CUSTOM_ROW):
+            self.set_slots_combo.addItem(f"{n}", n)
+        cur_slots = self._slot_count()
+        for i in range(self.set_slots_combo.count()):
+            if self.set_slots_combo.itemData(i) == cur_slots:
+                self.set_slots_combo.setCurrentIndex(i)
+                break
+        self.set_slots_combo.currentIndexChanged.connect(self._on_slots_changed)
+        slot_row.addWidget(self.set_slots_combo)
+        slot_row.addStretch(1)
+        v.addLayout(slot_row)
+        v.addWidget(QLabel(
+            "<i>How many saved color swatches to show, in rows of 8. Colors in "
+            "hidden slots are kept, they just are not displayed. Reopen the editor "
+            "to apply.</i>"))
+
         v.addWidget(self._hline())
 
         # --- Import / export profiles ---
@@ -1214,6 +1258,13 @@ class MainWindow(QMainWindow):
 
         v.addStretch(1)
         return box
+
+    def _on_slots_changed(self, _idx):
+        val = self.set_slots_combo.currentData()
+        if val:
+            self._set_setting("saved_color_slots", int(val))
+            self._status(f"Saved color slots set to {val}. "
+                         f"Reopen the editor to apply.")
 
     def _on_scale_changed(self, _idx):
         val = self.set_scale_combo.currentData()
@@ -1346,11 +1397,14 @@ class MainWindow(QMainWindow):
         text = QLabel(
             "<h3>Quick start</h3>"
             "<b>1. Color your keys.</b> Click a key (or drag a box over several), pick a "
-            "color on the wheel, then hit <i>Apply color</i>. No zone needed. Use "
-            "<i>Set as mode BASE color</i> for the whole board.<br><br>"
-            "<b>2. Zones (optional).</b> Select keys and hit <i>New zone from selection</i> "
-            "to name a group you can recolor or dim all at once. With a zone selected, "
-            "Ctrl-click keys to add or remove them from it.<br><br>"
+            "color on the wheel, then hit <i>Apply color to zone</i>. Those keys become "
+            "a zone, whether that is one key or thirty. Use <i>Set as mode BASE color</i> "
+            "for the whole board.<br><br>"
+            "<b>2. Zones.</b> Everything you color is a zone: a named group you can "
+            "recolor, dim, reorder, or give an effect. Select a zone to edit it, and "
+            "Ctrl-click keys to add or remove them. Rename it so the list stays "
+            "readable. Zones are layers, so drag them (or use the arrows) to control "
+            "which one wins where they overlap.<br><br>"
             "<b>2b. Zone effects.</b> With a zone selected, pick an <i>Effect</i>: type "
             "lighting (lights up as you type), breathing, blinking, color cycle, or "
             "twinkle. Add up to 8 colors and they cycle automatically. A zone can be "
@@ -1398,11 +1452,10 @@ class MainWindow(QMainWindow):
             "<h3>What covers what</h3>"
             "Everything is drawn in layers, from the bottom up:<br>"
             "1. the mode's <b>base color</b><br>"
-            "2. <b>zones</b> (the top zone in the list wins where they overlap, use the "
-            "Move up / Move down buttons to reorder)<br>"
-            "3. <b>direct key colors</b> set on individual keys<br>"
-            "4. <b>zone effects</b><br>"
-            "5. <b>Key State colors</b> (cooldown and toggle)<br><br>"
+            "2. <b>zones</b> (the top zone in the list wins where they overlap, drag "
+            "them or use the arrows to reorder)<br>"
+            "3. <b>zone effects</b><br>"
+            "4. <b>Key State colors</b> (cooldown and toggle)<br><br>"
             "So a <b>Key State color always wins</b>: if you give a key a cooldown or "
             "toggle, its indicator color covers whatever that key was set to in Color "
             "Zones. That is deliberate, an ability's status should always be readable. "
@@ -1485,20 +1538,24 @@ class MainWindow(QMainWindow):
         v.addWidget(self.zone_transp_btn)
 
         # saved custom colors
-        saved_header = QHBoxLayout()
-        saved_header.addWidget(QLabel("Saved colors"))
-        saved_header.addStretch(1)
-        add_row_btn = QPushButton("+")
-        add_row_btn.setFixedSize(24, 22)
-        add_row_btn.setToolTip("Add another row of 8 slots")
-        add_row_btn.clicked.connect(self._on_add_custom_row)
-        saved_header.addWidget(add_row_btn)
-        v.addLayout(saved_header)
+        v.addWidget(QLabel("Saved colors"))
 
-        self.custom_grid = QGridLayout()
+        # The saved colours live in their own little scroll area: filling all 64
+        # slots would otherwise push the panel (and the window) taller. Three
+        # rows are visible and the rest scrolls.
+        swatch_host = QWidget()
+        self.custom_grid = QGridLayout(swatch_host)
         self.custom_grid.setSpacing(3)
+        self.custom_grid.setContentsMargins(0, 0, 0, 0)
         self.custom_buttons: list[SwatchButton] = []
-        v.addLayout(self.custom_grid)
+        self.custom_scroll = QScrollArea()
+        self.custom_scroll.setWidget(swatch_host)
+        self.custom_scroll.setWidgetResizable(True)
+        self.custom_scroll.setFrameShape(QFrame.NoFrame)
+        self.custom_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        rows = max(1, self._slot_count() // CUSTOM_ROW)
+        self.custom_scroll.setFixedHeight(rows * 29 + 4)
+        v.addWidget(self.custom_scroll)
         self._load_custom_colors()
         self._rebuild_custom_grid()
 
@@ -1517,9 +1574,9 @@ class MainWindow(QMainWindow):
         v.addLayout(bright_row)
 
         v.addWidget(self._hline())
-        self.apply_btn = QPushButton("Apply color to zone / keys")
-        self.apply_btn.setToolTip("Paint the color above onto the selected zone, or "
-                                  "onto the selected keys if no zone is active.")
+        self.apply_btn = QPushButton("Apply color to zone")
+        self.apply_btn.setToolTip("Recolor the selected zone. With keys selected and "
+                                  "no zone active, makes a new zone from them.")
         self.apply_btn.clicked.connect(self._apply_picker_to_zone)
         self.apply_btn.setMinimumHeight(34)
         v.addWidget(self.apply_btn)
@@ -1535,15 +1592,13 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------- saved colors ---
 
     def _load_custom_colors(self):
-        self.custom_colors: list = [None] * CUSTOM_ROW
+        """Colours are stored to the cap; how many are *shown* is a setting, so
+        shrinking the visible slots never throws saved colours away."""
+        self.custom_colors: list = [None] * CUSTOM_MAX
         try:
             if CUSTOM_COLORS_PATH.exists():
                 data = json.loads(CUSTOM_COLORS_PATH.read_text())
-                colors = data.get("colors", [])
-                # pad up to a whole number of rows, min one row, max cap
-                n = max(CUSTOM_ROW, min(CUSTOM_MAX, ((len(colors) + CUSTOM_ROW - 1) // CUSTOM_ROW) * CUSTOM_ROW))
-                self.custom_colors = [None] * n
-                for i, c in enumerate(colors[:n]):
+                for i, c in enumerate((data.get("colors") or [])[:CUSTOM_MAX]):
                     self.custom_colors[i] = c
         except Exception:
             pass
@@ -1558,7 +1613,7 @@ class MainWindow(QMainWindow):
         for b in self.custom_buttons:
             b.setParent(None)
         self.custom_buttons = []
-        for i, hexc in enumerate(self.custom_colors):
+        for i, hexc in enumerate(self.custom_colors[:self._slot_count()]):
             btn = SwatchButton(i, self._on_custom_left, self._on_custom_right)
             btn.set_hex(hexc)
             self.custom_grid.addWidget(btn, i // CUSTOM_ROW, i % CUSTOM_ROW)
@@ -1578,13 +1633,11 @@ class MainWindow(QMainWindow):
         self.custom_buttons[index].set_hex(None)
         self._save_custom_colors()
 
-    def _on_add_custom_row(self):
-        if len(self.custom_colors) >= CUSTOM_MAX:
-            self._status(f"Custom colors capped at {CUSTOM_MAX}.")
-            return
-        self.custom_colors.extend([None] * CUSTOM_ROW)
-        self._rebuild_custom_grid()
-        self._save_custom_colors()
+    def _slot_count(self) -> int:
+        """How many saved-color slots to show (a multiple of 8, from Settings)."""
+        n = int(self.settings.get("saved_color_slots", 24))
+        n = max(CUSTOM_ROW, min(CUSTOM_MAX, n))
+        return (n // CUSTOM_ROW) * CUSTOM_ROW
 
     def _update_brightness_enabled(self):
         on = self.active_zone_idx is not None
@@ -2051,21 +2104,6 @@ class MainWindow(QMainWindow):
         self._update_selection_label()
         self._update_brightness_enabled()
 
-    def _on_reset_keys(self):
-        """Remove direct (loose) colors from the selected keys so they revert
-        to their zone color or the mode's base color."""
-        if not self.selected_keys:
-            self._status("Select the keys you want to reset first.")
-            return
-        km = self._mode().get("keys", {})
-        removed = 0
-        for k in list(self.selected_keys):
-            if km.pop(k, None) is not None:
-                removed += 1
-        self._render_keyboard()
-        self._apply_live()
-        self._status(f"Reset {removed} key(s) to base/zone color.")
-
     # ---------------------------------------------------- zones ---
 
     def _on_zone_selected(self, row):
@@ -2127,6 +2165,55 @@ class MainWindow(QMainWindow):
         self._reload_zones()
         self._apply_live()
         self._status(f"Deleted '{zone['name']}' (unsaved).")
+
+    @staticmethod
+    def move_in_list(items, src, dst):
+        """Apply Qt's rowsMoved(src -> dst) to the backing list. Qt's dst is the
+        index the row is inserted *before*, in the pre-move numbering."""
+        if src < 0 or src >= len(items) or dst < 0 or dst > len(items) or src == dst:
+            return items
+        item = items.pop(src)
+        items.insert(dst - 1 if dst > src else dst, item)
+        return items
+
+    def _on_zone_rows_moved(self, _p, start, _end, _dp, row):
+        """The user dragged a zone: reorder the real zone list to match."""
+        if self._loading:
+            return
+        self.move_in_list(self._zones(), start, row)
+        new_idx = row - 1 if row > start else row
+        self._reload_zones()
+        self.zone_list.setCurrentRow(new_idx)
+        self._apply_live()
+        self._status("Reordered zones (unsaved).")
+
+    def _on_zone_menu(self, pos):
+        """Right-click menu on the zone list."""
+        item = self.zone_list.itemAt(pos)
+        if item is not None:
+            self.zone_list.setCurrentRow(self.zone_list.row(item))
+        menu = QMenu(self)
+        act_up = menu.addAction("Move up")
+        act_down = menu.addAction("Move down")
+        menu.addSeparator()
+        act_ren = menu.addAction("Rename zone")
+        act_del = menu.addAction("Delete zone")
+        menu.addSeparator()
+        act_transp = menu.addAction("No color (transparent, effect only)")
+        on_zone = self.active_zone_idx is not None
+        for a in (act_up, act_down, act_ren, act_del, act_transp):
+            a.setEnabled(on_zone)
+        chosen = menu.exec(self.zone_list.mapToGlobal(pos))
+        if chosen is act_up:
+            self._on_zone_move(-1)
+        elif chosen is act_down:
+            self._on_zone_move(1)
+        elif chosen is act_ren:
+            self._on_rename_zone()
+        elif chosen is act_del:
+            self._on_delete_zone()
+        elif chosen is act_transp:
+            self._on_zone_transparent()
 
     def _on_zone_move(self, delta):
         """Move the selected zone up/down the layer stack (top of list wins)."""
@@ -2589,11 +2676,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "apply_btn"):
             on_zones = self.edit_mode == "zones"
             self.apply_btn.setEnabled(on_zones)
-            self.apply_btn.setText("Apply color to zone / keys" if on_zones
+            self.apply_btn.setText("Apply color to zone" if on_zones
                                    else "Apply color (Color Zones tab only)")
             self.apply_btn.setToolTip(
-                "Paint the color above onto the selected zone, or onto the "
-                "selected keys if no zone is active."
+                "Recolor the selected zone. With keys selected and no zone "
+                "active, makes a new zone from them."
                 if on_zones else
                 "Switch to the Color Zones tab to paint keys. On this tab, use "
                 "the tab's own colour buttons and swatches.")
@@ -2733,20 +2820,15 @@ class MainWindow(QMainWindow):
             self._apply_live()
 
     def _apply_picker_to_zone(self):
-        """Apply the picker color. If a zone is selected, edit that zone. If
-        instead loose keys are selected (no zone), color those keys directly,
-        no zone required. Otherwise just hold the color for later."""
+        """Apply the picker color. With a zone selected, recolor that zone.
+        With loose keys selected, turn them into a new zone and color it, so
+        everything on the board is always a zone."""
         if self.active_zone_idx is not None:
             self._zones()[self.active_zone_idx]["color"] = self._picker_hex()
             self._refresh_zone_row(self.active_zone_idx)
             self._apply_live()
         elif self.selected_keys:
-            km = self._mode().setdefault("keys", {})
-            hexc = self._picker_hex()
-            for k in self.selected_keys:
-                km[k] = hexc
-            self._render_keyboard()
-            self._apply_live()
+            self._on_new_zone()          # names it, colors it, selects it
 
     def _refresh_zone_row(self, idx):
         z = self._zones()[idx]

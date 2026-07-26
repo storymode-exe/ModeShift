@@ -257,9 +257,21 @@ def _normalize_mode(mode: dict) -> dict:
             cz.pop("effect", None)
     mode["zones"] = clean_zones
 
-    # loose per-key colors (set directly, not via a zone). key name -> hex.
-    keys = mode.get("keys", {}) or {}
-    mode["keys"] = {k: v for k, v in keys.items() if isinstance(v, str)}
+    # Older configs could colour keys directly, outside any zone. Everything is
+    # a zone now, so migrate those loose colours into zones (grouped by colour)
+    # and put them on top, which is the precedence they used to have.
+    loose = {k: v for k, v in (mode.get("keys", {}) or {}).items()
+             if isinstance(v, str)}
+    if loose:
+        by_color: dict[str, list] = {}
+        for key, hexc in loose.items():
+            by_color.setdefault(hexc.upper(), []).append(key)
+        migrated = [{"name": f"Keys {i}" if len(by_color) > 1 else "Keys",
+                     "keys": sorted(keys_), "color": color, "brightness": 100}
+                    for i, (color, keys_) in enumerate(by_color.items(), start=1)]
+        clean_zones = migrated + clean_zones
+        mode["zones"] = clean_zones
+    mode["keys"] = {}
 
     # per-key state indicators (cooldown / toggle), per mode
     states = {}

@@ -41,7 +41,8 @@ Detection cues, watcher poll interval, keyboard size, and profile import/export.
 ## Features
 
 - **Per-key lighting** on a live map of your actual keyboard, drawn from OpenRGB's
-  own layout data, so it works on many OpenRGB keyboards, not just one.
+  own layout data, so it works on many OpenRGB keyboards, not just one. Select any
+  keys, pick a color, and they become a zone.
 - **Profiles per game**, applied automatically by a tray watcher that follows your
   focused window.
 - **Modes** inside a profile (for example Flight, On Foot, Mining) with
@@ -56,7 +57,8 @@ Detection cues, watcher poll interval, keyboard size, and profile import/export.
   from the cooldown color toward the ready color, then signals ready) or a
   **toggle** (press flips it between colors and it stays there). Handy for ability
   cooldowns and for shields or engines on/off.
-- **HSV color picker** with a brightness slider and up to 64 saved custom colors.
+- **HSV color picker** with a brightness slider and up to 64 saved custom colors
+  (choose how many slots to show, in rows of 8).
 - **Detect from focused window** to fill in a game's match string for you, with a
   keyboard countdown and an optional sound.
 - **Import and export profiles** as portable `.modeshift` files, so you can back
@@ -174,10 +176,10 @@ you cloned the repo):
 Everything is drawn bottom up:
 
 1. the mode's **base color**
-2. **zones** (the top zone in the list wins where they overlap)
-3. **direct key colors** set on individual keys
-4. **zone effects**
-5. **Key State colors** (cooldown and toggle)
+2. **zones** (the top zone in the list wins where they overlap; drag them or use
+   the arrows to reorder)
+3. **zone effects**
+4. **Key State colors** (cooldown and toggle)
 
 So a Key State color always covers whatever that key was set to in Color Zones.
 That is deliberate: an ability's status should always be readable.

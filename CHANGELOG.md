@@ -2,6 +2,30 @@
 
 All notable changes to ModeShift are documented here.
 
+## v1.3.0
+
+### Changed
+- **Everything you color is now a zone.** Selecting keys and hitting *Apply color
+  to zone* turns that selection into a zone, whether it is one key or thirty.
+  Coloring keys outside a zone is gone, which means one concept instead of two
+  and a uniform layer stack. Any loose key colors in an existing config are
+  migrated into zones automatically (grouped by color, placed on top so they keep
+  the precedence they had).
+- Compact zone controls: the five button rows are now a 2x2 grid with the reorder
+  arrows stacked beside them, which keeps the effect controls in view.
+- The *Reset keys* button is gone; deleting the zone is the reset.
+
+### Added
+- Zones can be reordered by dragging them in the list, as well as with the arrows.
+- Right-click a zone for move up/down, rename, delete, and transparent.
+- **Saved color slots** setting: choose how many swatches to show, from 8 to 64 in
+  rows of 8. Colors in hidden slots are kept, just not displayed. This replaces
+  the old "+" button.
+
+### Fixed
+- Saved colors past the first few rows could be clipped out of view, because the
+  color panel's height was fixed when the window was built.
+
 ## v1.2.0
 
 ### Added
