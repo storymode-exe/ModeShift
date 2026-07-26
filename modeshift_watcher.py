@@ -24,6 +24,7 @@ Run with --list-leds to print every LED name this device reports:
     python3 modeshift_watcher.py --list-leds
 """
 
+import atexit
 import os
 import sys
 import threading
@@ -69,9 +70,9 @@ class Watcher:
         self._active_profile_name = None   # profile currently being displayed
         self._mode_override = None         # mode forced by a key function (momentary)
         self._icon = None                  # tray icon, set by main() for live updates
-        # seed with the current command-file mtime so a stale command from a
-        # previous session doesn't fire on startup
-        self._cmd_mtime = self._command_mtime()
+        # seed with the current command-file contents so a stale command from
+        # a previous session doesn't fire on startup
+        self._cmd_text = self._command_text()
         self._connect()
 
     def _reset_key(self):
@@ -88,11 +89,11 @@ class Watcher:
         except Exception:
             return None
 
-    def _command_mtime(self) -> float:
+    def _command_text(self) -> str:
         try:
-            return rc.WATCHER_CMD_PATH.stat().st_mtime
+            return rc.WATCHER_CMD_PATH.read_text()
         except OSError:
-            return 0.0
+            return ""
 
     def reload_config_only(self):
         """Re-read games.json without reconnecting to OpenRGB (lighter than
@@ -106,22 +107,38 @@ class Watcher:
         self._mode_override = None
 
     def _check_editor_command(self):
-        """If the editor dropped a new command, reload config and switch to the
-        requested profile so the watcher matches what's being edited."""
-        mtime = self._command_mtime()
-        if mtime <= self._cmd_mtime:
+        """If the editor dropped a new command, act on it. Compares the file's
+        contents rather than its timestamp: two commands written within the
+        same filesystem timestamp tick would otherwise be missed."""
+        try:
+            text = rc.WATCHER_CMD_PATH.read_text()
+        except OSError:
             return
-        self._cmd_mtime = mtime
+        if text == self._cmd_text:
+            return
+        self._cmd_text = text
         cmd = rc.read_watcher_command()
         if not cmd:
             return
-        self.reload_config_only()
         profile = cmd.get("profile")
+        # the editor pauses us while its live preview owns the keyboard
+        if profile == rc.WATCHER_CMD_PAUSE:
+            if not self.is_paused():
+                self.pause()
+                print("[modeshift] paused for the editor's live preview",
+                      file=sys.stderr)
+            return
+        if profile == rc.WATCHER_CMD_RESUME:
+            if self.is_paused():
+                self.resume()
+                print("[modeshift] resumed", file=sys.stderr)
+            return
+        self.reload_config_only()
         if profile in (None, rc.WATCHER_CMD_AUTO):
             self.set_manual(AUTO)
         else:
             self.set_manual(profile)
-        print(f"[modeshift_watcher] editor command: switch to {profile!r}", file=sys.stderr)
+        print(f"[modeshift] editor command: switch to {profile!r}", file=sys.stderr)
 
     def _connect(self):
         if self._reactive is not None:
@@ -242,9 +259,14 @@ class Watcher:
 
     def run(self):
         while not self._stop.is_set():
+            try:
+                # checked even while paused, otherwise a paused watcher could
+                # never see the editor's resume command
+                self._check_editor_command()
+            except Exception as e:
+                print(f"[modeshift] command check failed: {e}", file=sys.stderr)
             if not self._paused.is_set():
                 try:
-                    self._check_editor_command()
                     if self._manual != AUTO:
                         self.apply_profile(self._manual)
                     else:
@@ -545,6 +567,11 @@ def main():
     if watcher is None:
         print(f"[modeshift_watcher] startup failed: {last_err}", file=sys.stderr)
         sys.exit(1)
+
+    # record our PID so the editor's Start/Restart button can stop exactly
+    # this process, on any platform
+    rc.write_watcher_pid()
+    atexit.register(rc.clear_watcher_pid)
 
     worker = threading.Thread(target=watcher.run, daemon=True)
     worker.start()

@@ -32,6 +32,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -427,6 +428,14 @@ class KeyCaptureDialog(QDialog):
         self._held = []          # keys currently down, in press order
 
         self._devs, self._sel, self._codes = [], None, {}
+        self._listener = None
+        self._pending = []          # (key name, pressed) captured off-thread
+
+        if sys.platform.startswith("win"):
+            self._start_windows_capture(valid_names, v)
+            self.resize(360, 170)
+            return
+
         try:
             import evdev
             from evdev import ecodes
@@ -458,6 +467,61 @@ class KeyCaptureDialog(QDialog):
             note.setWordWrap(True)
             v.addWidget(note)
         self.resize(360, 170)
+
+    def _start_windows_capture(self, valid_names, layout):
+        """Windows: capture via a pynput hook. The hook runs on its own thread,
+        so events are queued and drained by a timer on the GUI thread."""
+        try:
+            from pynput import keyboard
+        except ImportError as e:
+            self.label.setText("Key capture unavailable")
+            note = QLabel("<i>Install pynput for key capture on Windows:<br>"
+                          f"<tt>pip install pynput</tt><br>({e})</i>")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+            return
+
+        valid = {n.lower(): n for n in valid_names}
+
+        def name_for(key):
+            vk = getattr(key, "vk", None)
+            if vk is None:
+                vk = getattr(getattr(key, "value", None), "vk", None)
+            if vk is None:
+                return None
+            name = rc.win_vk_to_key_name(int(vk))
+            return valid.get(name.lower()) if name else None
+
+        def on_press(key):
+            name = name_for(key)
+            if name:
+                self._pending.append((name, True))
+
+        def on_release(key):
+            name = name_for(key)
+            if name:
+                self._pending.append((name, False))
+
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._listener.start()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._drain_pending)
+        self._timer.start(40)
+
+    def _drain_pending(self):
+        """Apply queued Windows key events on the GUI thread."""
+        while self._pending:
+            name, pressed = self._pending.pop(0)
+            if pressed:
+                if name not in self._held:
+                    self._held.append(name)
+                combo = list(self._held)
+                if self.captured is None or len(combo) > len(self.captured):
+                    self.captured = combo
+                    self.label.setText(" + ".join(combo))
+                    self.accept_btn.setEnabled(True)
+            elif name in self._held:
+                self._held.remove(name)
 
     def _reset_capture(self):
         self.captured = None
@@ -496,6 +560,11 @@ class KeyCaptureDialog(QDialog):
             self._timer.stop()
         except Exception:
             pass
+        if self._listener is not None:
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
         for d in self._devs:
             try:
                 d.close()
@@ -2935,14 +3004,25 @@ class MainWindow(QMainWindow):
             self._status(f"Failed to apply: {e}")
 
     def _on_live_toggled(self, on):
+        # a running watcher and this preview would otherwise both drive the
+        # same LEDs, which looks like two effects fighting
+        try:
+            rc.write_watcher_pause(bool(on))
+        except Exception:
+            pass
         if on:
             self._apply_live()
         else:
             self._preview.stop()
+            self._status("Live preview off. The watcher has the keyboard again.")
 
     def closeEvent(self, e):
         try:
             self._preview.stop()
+        except Exception:
+            pass
+        try:
+            rc.write_watcher_pause(False)   # hand the keyboard back
         except Exception:
             pass
         super().closeEvent(e)
@@ -2978,18 +3058,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", f"Couldn't save before restart:\n{e}")
             return
         try:
-            # stop any existing watcher instances (ignore "no process" result)
-            subprocess.run(["pkill", "-f", WATCHER_SCRIPT.name],
-                           capture_output=True)
-            import time
-            time.sleep(0.3)
-            log = open("/tmp/rgb_watcher.log", "a")
-            subprocess.Popen(
-                [sys.executable, str(WATCHER_SCRIPT)],
-                stdout=log, stderr=log, start_new_session=True,
-            )
-            self._status("Watcher (re)started. Check your tray for its icon "
-                         "(log: /tmp/rgb_watcher.log).")
+            rc.stop_running_watcher()      # by PID, so it works on any platform
+            if not IS_WINDOWS:
+                # also catch watchers started before PID files existed
+                subprocess.run(["pkill", "-f", WATCHER_SCRIPT.name],
+                               capture_output=True)
+            time.sleep(0.4)
+
+            log_path = Path(tempfile.gettempdir()) / "modeshift_watcher.log"
+            log = open(log_path, "a")
+            kwargs = {"stdout": log, "stderr": log}
+            if IS_WINDOWS:
+                # pythonw so no console window pops up, and detach from us
+                exe = Path(sys.executable)
+                pythonw = exe.with_name("pythonw.exe")
+                python = str(pythonw if pythonw.exists() else exe)
+                kwargs["creationflags"] = (subprocess.CREATE_NO_WINDOW |
+                                           subprocess.DETACHED_PROCESS)
+            else:
+                python = sys.executable
+                kwargs["start_new_session"] = True
+            subprocess.Popen([python, str(WATCHER_SCRIPT)], **kwargs)
+            self._status(f"Watcher (re)started. Check your tray for its icon "
+                         f"(log: {log_path}).")
         except Exception as e:
             QMessageBox.critical(self, "Watcher failed to start", str(e))
 
@@ -3028,6 +3119,11 @@ def main():
     # exactly that minimum rather than something taller
     win.setMinimumSize(w, h)
     win.resize(w, h)
+    # live preview starts on, so tell any running watcher to stand down
+    try:
+        rc.write_watcher_pause(True)
+    except Exception:
+        pass
     win.show()
     sys.exit(app.exec())
 

@@ -39,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -425,6 +426,56 @@ def active_profiles(cfg: dict) -> dict:
 
 WATCHER_CMD_PATH = CONFIG_PATH.parent / "watcher_command.json"
 WATCHER_CMD_AUTO = "__auto__"
+WATCHER_PID_PATH = CONFIG_PATH.parent / "watcher.pid"
+
+
+def write_watcher_pid(path: Path = None):
+    """The running watcher records its PID so the editor can stop exactly that
+    process, instead of pattern-matching process names per platform."""
+    path = path or WATCHER_PID_PATH
+    try:
+        path.write_text(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def clear_watcher_pid(path: Path = None):
+    path = path or WATCHER_PID_PATH
+    try:
+        (path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def read_watcher_pid(path: Path = None):
+    path = path or WATCHER_PID_PATH
+    try:
+        pid = int(path.read_text().strip())
+        return pid if pid > 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def stop_running_watcher(path: Path = None) -> bool:
+    """Stop the watcher recorded in the PID file. True if we asked one to stop."""
+    pid = read_watcher_pid(path)
+    if pid is None:
+        return False
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=5)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        clear_watcher_pid(path)
+    return True
+
+
+WATCHER_CMD_PAUSE = "__pause__"
+WATCHER_CMD_RESUME = "__resume__"
 
 
 def write_watcher_command(profile_name: str, path: Path = None):
@@ -433,6 +484,12 @@ def write_watcher_command(profile_name: str, path: Path = None):
         path.write_text(json.dumps({"profile": profile_name}))
     except OSError:
         pass
+
+
+def write_watcher_pause(paused: bool, path: Path = None):
+    """Ask a running watcher to stop or resume driving the keyboard, so the
+    editor's live preview does not fight it for the same LEDs."""
+    write_watcher_command(WATCHER_CMD_PAUSE if paused else WATCHER_CMD_RESUME, path)
 
 
 def read_watcher_command(path: Path = None):
