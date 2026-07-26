@@ -24,3 +24,4 @@ env/
 *.swp
 *~
 .DS_Store
+RELEASE_NOTES_*.md
