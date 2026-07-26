@@ -60,6 +60,7 @@ class Watcher:
         self.led_lookup: dict = {}
         self._reactive = None              # fx.EffectEngine, created on connect
         self._held = set()                 # keys currently down (for combos)
+        self._combo_fired = False          # debounce for the re-sync shortcut
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._manual = AUTO  # AUTO, or a profile name to force
@@ -256,11 +257,83 @@ class Watcher:
                     print(f"[modeshift_watcher] error in poll loop: {e}", file=sys.stderr)
             time.sleep(self.config["poll_interval_seconds"])
 
+    def on_key(self, key_name: str, pressed: bool):
+        """Single entry point for a physical key event, from whichever listener
+        the platform uses. Drives the re-sync shortcut, type lighting, and the
+        per-key functions."""
+        if pressed:
+            self._held.add(key_name)
+        else:
+            self._held.discard(key_name)
+        combo = self._reset_key()
+        if combo:
+            complete = all(k in self._held for k in combo)
+            if not complete:
+                self._combo_fired = False        # ready to fire again
+            elif (pressed and not self._combo_fired
+                  and key_name in combo and self._reactive is not None):
+                # fire once when the combo completes, not on every later
+                # keypress while it is still held down
+                self._combo_fired = True
+                self._reactive.reset_key_states()
+                print("[modeshift] key states reset", file=sys.stderr)
+        if pressed and self._reactive is not None:
+            self._reactive.feed_key(self.led_lookup.get(key_name.lower()))
+        try:
+            self.handle_key_event(key_name, pressed=pressed)
+        except Exception as e:
+            print(f"[modeshift] key handler error: {e}", file=sys.stderr)
+
     def run_key_listener(self):
-        """Reads raw keyboard input via evdev and dispatches press/release to
-        handle_key_event. Requires python-evdev and read access to /dev/input
-        (add your user to the 'input' group). Fails soft: if unavailable, key
-        functions just don't fire and everything else keeps working."""
+        """Starts the platform's key listener. Fails soft: if it is unavailable,
+        key-driven features just don't fire and everything else keeps working."""
+        if sys.platform.startswith("win"):
+            return self._run_key_listener_windows()
+        return self._run_key_listener_evdev()
+
+    def _run_key_listener_windows(self):
+        """Windows: a global keyboard hook via pynput. No special privileges
+        needed, unlike the 'input' group on Linux."""
+        try:
+            from pynput import keyboard
+        except ImportError:
+            print("[modeshift] pynput not installed; type lighting, key "
+                  "functions and key states are disabled. Install with: "
+                  "pip install pynput", file=sys.stderr)
+            return
+
+        valid = {rc.led_shorthand(l).lower() for l in self.device.leds}
+
+        def name_for(key):
+            vk = getattr(key, "vk", None)
+            if vk is None:
+                vk = getattr(getattr(key, "value", None), "vk", None)
+            if vk is None:
+                return None
+            name = rc.win_vk_to_key_name(int(vk))
+            # only report keys this keyboard actually has an LED for
+            return name if name and name.lower() in valid else None
+
+        def on_press(key):
+            name = name_for(key)
+            if name:
+                self.on_key(name, True)
+
+        def on_release(key):
+            name = name_for(key)
+            if name:
+                self.on_key(name, False)
+
+        print("[modeshift] key features active (Windows hook)", file=sys.stderr)
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            while not self._stop.is_set():
+                listener.join(0.5)
+                if not listener.running:
+                    break
+
+    def _run_key_listener_evdev(self):
+        """Linux: reads raw keyboard input via evdev. Requires python-evdev and
+        read access to /dev/input (add your user to the 'input' group)."""
         try:
             import evdev
             from evdev import ecodes
@@ -319,23 +392,7 @@ class Watcher:
                         key_name = code_to_name.get(event.code)
                         if key_name is None:
                             continue
-                        pressed = (event.value == 1)
-                        # track what's currently held so the reset shortcut can
-                        # be a combo (for example Ctrl + Shift + R)
-                        if pressed:
-                            self._held.add(key_name)
-                        else:
-                            self._held.discard(key_name)
-                        if pressed and self._reactive is not None:
-                            combo = self._reset_key()
-                            if combo and all(k in self._held for k in combo):
-                                self._reactive.reset_key_states()
-                                print("[modeshift] key states reset", file=sys.stderr)
-                            self._reactive.feed_key(self.led_lookup.get(key_name.lower()))
-                        try:
-                            self.handle_key_event(key_name, pressed=pressed)
-                        except Exception as e:
-                            print(f"[modeshift_watcher] key handler error: {e}", file=sys.stderr)
+                        self.on_key(key_name, pressed=(event.value == 1))
                 except OSError:
                     continue
 

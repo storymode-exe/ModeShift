@@ -476,6 +476,46 @@ _EVDEV_SPECIAL = {
 }
 
 
+# ------------------------------- Windows virtual-key codes -> our key names ---
+# Only the codes our LED names use. Left/right modifiers and the numpad are
+# distinguished so Left Control and Right Alt bind separately, as on Linux.
+_VK_TO_KEY = {
+    0x1B: "Escape", 0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter",
+    0x20: "Space", 0x14: "Caps Lock", 0x90: "Num Lock", 0x91: "Scroll Lock",
+    0x2C: "Print Screen", 0x13: "Pause/Break", 0x2D: "Insert", 0x2E: "Delete",
+    0x24: "Home", 0x23: "End", 0x21: "Page Up", 0x22: "Page Down",
+    0x25: "Left Arrow", 0x26: "Up Arrow", 0x27: "Right Arrow", 0x28: "Down Arrow",
+    0xA0: "Left Shift", 0xA1: "Right Shift",
+    0xA2: "Left Control", 0xA3: "Right Control",
+    0xA4: "Left Alt", 0xA5: "Right Alt",
+    0x5B: "Left Windows", 0x5C: "Right Windows", 0x5D: "Menu",
+    # punctuation (US layout)
+    0xBA: ";", 0xBB: "=", 0xBC: ",", 0xBD: "-", 0xBE: ".", 0xBF: "/",
+    0xC0: "`", 0xDB: "[", 0xDC: "\\ (ANSI)", 0xDD: "]", 0xDE: "'",
+    # numpad
+    0x6A: "Number Pad *", 0x6B: "Number Pad +", 0x6D: "Number Pad -",
+    0x6E: "Number Pad .", 0x6F: "Number Pad /",
+    # media
+    0xAD: "Media Mute", 0xB3: "Media Play/Pause",
+    0xB0: "Media Next", 0xB1: "Media Previous",
+}
+
+
+def win_vk_to_key_name(vk: int) -> str | None:
+    """Windows virtual-key code -> the key name used in games.json, or None."""
+    if vk in _VK_TO_KEY:
+        return _VK_TO_KEY[vk]
+    if 0x30 <= vk <= 0x39:                 # 0-9
+        return chr(vk)
+    if 0x41 <= vk <= 0x5A:                 # A-Z
+        return chr(vk)
+    if 0x60 <= vk <= 0x69:                 # numpad 0-9
+        return f"Number Pad {vk - 0x60}"
+    if 0x70 <= vk <= 0x7B:                 # F1-F12
+        return f"F{vk - 0x6F}"
+    return None
+
+
 def key_name_to_ecode_name(key_name: str):
     """Returns the evdev ecode name (e.g. 'KEY_LEFTCTRL') for one of our key
     names, or None if unmapped."""

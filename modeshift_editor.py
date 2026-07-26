@@ -28,6 +28,7 @@ Run:          python3 modeshift_editor.py
 import colorsys
 import copy
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -61,8 +62,15 @@ APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
 
 WATCHER_SCRIPT = Path(__file__).parent / "modeshift_watcher.py"
-AUTOSTART_FILE = (Path.home() / ".config" / "autostart" /
-                  "modeshift-watcher.desktop")
+IS_WINDOWS = sys.platform.startswith("win")
+if IS_WINDOWS:
+    # the per-user Startup folder: anything here runs at login
+    AUTOSTART_FILE = (Path(os.environ.get("APPDATA", Path.home())) / "Microsoft" /
+                      "Windows" / "Start Menu" / "Programs" / "Startup" /
+                      "ModeShift Watcher.bat")
+else:
+    AUTOSTART_FILE = (Path.home() / ".config" / "autostart" /
+                      "modeshift-watcher.desktop")
 
 CUSTOM_COLORS_PATH = rc.CONFIG_PATH.parent / "custom_colors.json"
 SETTINGS_PATH = rc.CONFIG_PATH.parent / "settings.json"
@@ -1285,6 +1293,14 @@ class MainWindow(QMainWindow):
         try:
             if on:
                 AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+                if IS_WINDOWS:
+                    # pythonw + start = no console window on login
+                    AUTOSTART_FILE.write_text(
+                        "@echo off\r\n"
+                        f'start "" pythonw "{WATCHER_SCRIPT}" --wait\r\n')
+                    self._status("The watcher will start automatically on login.")
+                    self._sync_autostart_note()
+                    return
                 AUTOSTART_FILE.write_text(
                     "[Desktop Entry]\n"
                     "Type=Application\n"

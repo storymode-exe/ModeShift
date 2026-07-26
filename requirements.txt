@@ -5,6 +5,7 @@ psutil>=5.9              # process names for game/window detection
 pystray>=0.19            # system tray icon (the watcher)
 Pillow>=9.0              # tray icon image generation
 
-# Linux only: raw key capture for type lighting, key functions and key states.
-# Windows uses its own hook, so pip skips this there.
+# Raw key capture for type lighting, key functions and key states.
+# Each platform gets only the one it can use, so pip skips the other.
 evdev>=1.6; sys_platform == "linux"
+pynput>=1.7; sys_platform == "win32"
