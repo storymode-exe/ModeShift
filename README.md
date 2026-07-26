@@ -1,3 +1,5 @@
+
+
 # ModeShift
 
 **RGB lighting profiles for OpenRGB keyboards on Linux.**
@@ -63,7 +65,8 @@ Detection cues, watcher poll interval, keyboard size, and profile import/export.
   keyboard countdown and an optional sound.
 - **Import and export profiles** as portable `.modeshift` files, so you can back
   them up or share them.
-- **Adjustable keyboard size** in the editor (100 to 200%).
+
+https://github.com/user-attachments/assets/0c7e1408-f6f9-44cd-9a2d-71e11c5da39a
 
 ## How it works
 
