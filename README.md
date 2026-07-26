@@ -202,6 +202,10 @@ For automatic "focused window" detection, ModeShift picks a backend at runtime:
 | KDE Plasma Wayland | `kdotool` | Install from the AUR or your distro |
 | Other Wayland (GNOME, sway, ...) | `xprop` fallback | Works for XWayland windows; native Wayland windows are not yet detected |
 
+X11 detection is newly added and has not yet been confirmed on a real X11 session.
+If you run X11, `python3 modeshift_watcher.py --detect-test` will show whether it
+works, and a report either way is welcome.
+
 If neither tool is installed, ModeShift tells you which package to get and
 everything else keeps working; you just pick profiles from the tray yourself.
 
