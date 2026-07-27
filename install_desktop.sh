@@ -3,8 +3,8 @@
 #   - ModeShift Watcher -> autostart on login + app menu
 #   - ModeShift Editor  -> app menu
 #
-# Re-run any time after moving the project folder; the Exec paths below are
-# rewritten to match wherever this script currently lives.
+# Re-run any time after moving the project folder; the Exec and Icon paths
+# below are rewritten to match wherever this script currently lives.
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,9 +13,11 @@ APPS="$HOME/.local/share/applications"
 
 mkdir -p "$AUTOSTART" "$APPS"
 
-# Rewrite the Exec= paths to this folder's actual location.
+# Rewrite the Exec= and Icon= paths to this folder's actual location. Icon=
+# accepts an absolute path, so the logo needs no install into the icon theme.
 fix_paths() {
-    sed "s|Exec=python3 .*/\([a-z_]*\.py\)|Exec=python3 $DIR/\1|" "$1"
+    sed -e "s|Exec=python3 .*/\([a-z_]*\.py\)|Exec=python3 $DIR/\1|" \
+        -e "s|^Icon=.*|Icon=$DIR/assets/modeshift-256.png|" "$1"
 }
 
 fix_paths "$DIR/desktop/modeshift-watcher.desktop" > "$AUTOSTART/modeshift-watcher.desktop"
