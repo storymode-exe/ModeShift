@@ -54,7 +54,17 @@ try:
 except Exception:  # enum missing/renamed in some versions -> fall back to matrix test
     _DEVICE_TYPE_KEYBOARD = None
 
-CONFIG_PATH = Path(__file__).parent / "games.json"
+CONFIG_PATH = Path(__file__).parent / "modeshift.json"
+# the config used to be games.json; it is read (and migrated on next save) if
+# the new name isn't there yet, so nobody's setup disappears on upgrade
+LEGACY_CONFIG_PATH = Path(__file__).parent / "games.json"
+
+
+def config_path_for_reading(path: Path = None) -> Path:
+    path = path or CONFIG_PATH
+    if not path.exists() and path == CONFIG_PATH and LEGACY_CONFIG_PATH.exists():
+        return LEGACY_CONFIG_PATH
+    return path
 
 _UNSET = object()
 _BACKEND = _UNSET          # cached window-detection tool, see detect_backend()
@@ -371,8 +381,8 @@ def _normalize_device(dev: dict) -> dict:
     return dev
 
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
-    with open(path, "r") as f:
+def load_config(path: Path = None) -> dict:
+    with open(config_path_for_reading(path or CONFIG_PATH), "r") as f:
         cfg = json.load(f)
 
     cfg.setdefault("openrgb", {})
@@ -400,14 +410,15 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     return cfg
 
 
-def save_config(cfg: dict, path: Path = CONFIG_PATH):
+def save_config(cfg: dict, path: Path = None):
     out = {
         "openrgb": {"host": cfg["openrgb"]["host"], "port": cfg["openrgb"]["port"]},
         "poll_interval_seconds": cfg["poll_interval_seconds"],
         "active_device": cfg.get("active_device"),
+        "default_profile": cfg.get("default_profile"),
         "devices": cfg["devices"],
     }
-    with open(path, "w") as f:
+    with open(path or CONFIG_PATH, "w") as f:
         json.dump(out, f, indent=2)
         f.write("\n")
 
@@ -665,8 +676,19 @@ def best_match_string(window_class: str, process_name: str) -> str:
     return cls
 
 
-def resolve_profile_name(window_class: str, pid: int, profiles: dict) -> str:
-    """Returns the matching profile name, falling back to DEFAULT_PROFILE_NAME."""
+def fallback_profile_name(profiles: dict, preferred: str = None) -> str:
+    """The profile to use when the focused window matches nothing: whichever
+    one is set as default, else 'Default', else the first that exists."""
+    if preferred and preferred in profiles:
+        return preferred
+    if DEFAULT_PROFILE_NAME in profiles:
+        return DEFAULT_PROFILE_NAME
+    return next(iter(profiles), DEFAULT_PROFILE_NAME)
+
+
+def resolve_profile_name(window_class: str, pid: int, profiles: dict,
+                         default: str = None) -> str:
+    """Returns the matching profile name, else the configured default."""
     wc = (window_class or "").lower()
     pn = process_name_for_pid(pid)
     for name, prof in profiles.items():
@@ -675,7 +697,7 @@ def resolve_profile_name(window_class: str, pid: int, profiles: dict) -> str:
             continue
         if m in wc or m in pn:
             return name
-    return DEFAULT_PROFILE_NAME
+    return fallback_profile_name(profiles, default)
 
 
 # ----------------------------------------------------------- OpenRGB ---

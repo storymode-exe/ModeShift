@@ -676,6 +676,12 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(slot)
             pbtns.addWidget(b)
+        # the default-profile toggle rides along in this row rather than taking
+        # a row of its own, which would push the panel into a scrollbar
+        self.default_btn = QPushButton("★")
+        self.default_btn.setFixedWidth(32)
+        self.default_btn.clicked.connect(self._on_set_default_profile)
+        pbtns.addWidget(self.default_btn)
         v.addLayout(pbtns)
 
         v.addWidget(QLabel("Match string (window / process):"))
@@ -727,7 +733,7 @@ class MainWindow(QMainWindow):
         apply_btn.clicked.connect(self._on_apply_now)
         v.addWidget(apply_btn)
 
-        save_btn = QPushButton("Save to games.json")
+        save_btn = QPushButton("Save configuration")
         save_btn.clicked.connect(self._on_save)
         v.addWidget(save_btn)
 
@@ -1863,13 +1869,16 @@ class MainWindow(QMainWindow):
         self._loading = True
         # profiles combo
         self.profile_combo.clear()
+        default_name = self._default_profile_name()
         for name in self._all_profiles():
-            self.profile_combo.addItem(name, name)
+            label = f"★ {name}" if name == default_name else name
+            self.profile_combo.addItem(label, name)
         idx = self.profile_combo.findData(self.current_profile_name)
         self.profile_combo.setCurrentIndex(max(0, idx))
         self.match_field.setText(self._profile().get("match", ""))
         self.match_field.setEnabled(self.current_profile_name != rc.DEFAULT_PROFILE_NAME)
         self._loading = False
+        self._sync_default_button()
         self._reload_export_combo()
         self._reload_modes()
 
@@ -1949,6 +1958,31 @@ class MainWindow(QMainWindow):
         self.match_field.setEnabled(self.current_profile_name != rc.DEFAULT_PROFILE_NAME)
         self._reload_modes()
         self._apply_live()  # push the newly-selected profile to the keyboard
+
+    def _default_profile_name(self) -> str:
+        return rc.fallback_profile_name(self._all_profiles(),
+                                        self.cfg.get("default_profile"))
+
+    def _on_set_default_profile(self):
+        self.cfg["default_profile"] = self.current_profile_name
+        self._sync_default_button()
+        self._reload_all()
+        self._status(f"'{self.current_profile_name}' is now the default profile "
+                     f"(unsaved).")
+
+    def _sync_default_button(self):
+        if not hasattr(self, "default_btn"):
+            return
+        is_default = self.current_profile_name == self._default_profile_name()
+        self.default_btn.setEnabled(not is_default)
+        self.default_btn.setToolTip(
+            f"'{self.current_profile_name}' is the default profile, it is used "
+            f"when the focused window matches nothing."
+            if is_default else
+            "Make this the default profile (used when the focused window "
+            "matches nothing).")
+        self.default_btn.setStyleSheet(
+            "color:#FFD700; font-size:15px;" if is_default else "font-size:15px;")
 
     def _on_new_profile(self):
         name, ok = QInputDialog.getText(self, "New Profile", "Profile name:")
@@ -3161,7 +3195,7 @@ def main():
         cfg = {"openrgb": {"host": "127.0.0.1", "port": 6742},
                "poll_interval_seconds": 1.5, "devices": {}, "active_device": None}
     except Exception as e:
-        QMessageBox.critical(None, "Config error", f"Couldn't load games.json:\n{e}")
+        QMessageBox.critical(None, "Config error", f"Couldn't load the configuration:\n{e}")
         sys.exit(1)
     try:
         client = rc.open_client(cfg, client_name="profile-editor")

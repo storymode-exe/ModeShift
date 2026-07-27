@@ -337,13 +337,29 @@ class EffectEngine:
             self._base_dirty = False
             return frame
 
+    # Some keyboards (Keychron Ultra boards with naaraxi's firmware among them)
+    # hand control back to their own firmware lighting if the host stops
+    # sending direct-mode updates. Re-send the current frame this often even
+    # when nothing is animating, so a static profile stays on screen.
+    KEEPALIVE_SECONDS = 1.0
+
     def _run(self):
+        last_push = 0.0
         while self._running.is_set():
             frame_dt = 1.0 / self._fps
-            frame = self._compose(time.monotonic())
+            now = time.monotonic()
+            frame = self._compose(now)
+            if frame is None and now - last_push >= self.KEEPALIVE_SECONDS:
+                with self._lock:
+                    frame = list(self._base)          # nothing animating: resend
+                    for layer in self._layers:
+                        self._render_layer(layer, frame, now)
+                    if self._key_states:
+                        self._render_key_states(frame, now)
             if frame is not None:
                 try:
                     self.device.set_colors(frame, fast=True)
+                    last_push = now
                 except Exception:
                     pass
             time.sleep(frame_dt)

@@ -67,7 +67,7 @@ Detection cues, watcher poll interval, keyboard size, and profile import/export.
 
 ## How it works
 
-ModeShift is two programs sharing one config file (`games.json`):
+ModeShift is two programs sharing one config file (`modeshift.json`):
 
 - `modeshift_editor.py` is the GUI. You edit profiles, modes, zones, effects, key
   functions, and key states.
@@ -139,7 +139,7 @@ sudo usermod -aG input $USER      # then log out and back in
 First run: copy the example config so ModeShift has something to start from.
 
 ```bash
-cp games.example.json games.json
+cp modeshift.example.json modeshift.json
 ```
 
 ## Usage
@@ -222,7 +222,7 @@ second as you switch windows.
 
 ModeShift stores its data next to the scripts:
 
-- `games.json` is your profiles, modes, zones, effects, functions, and key states.
+- `modeshift.json` is your profiles, modes, zones, effects, functions, and key states.
 - `custom_colors.json` is your saved swatches.
 - `settings.json` is the editor and watcher settings.
 - `watcher_command.json` is a small file the editor uses to nudge the running watcher.

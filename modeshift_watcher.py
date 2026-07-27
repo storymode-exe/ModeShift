@@ -26,6 +26,7 @@ Run with --list-leds to print every LED name this device reports:
 
 import atexit
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -79,6 +80,18 @@ class Watcher:
         # pause in the file must not strand the keyboard.
         self._cmd_text = self._command_text()
         self._connect()
+
+    def refresh_menu(self):
+        """Rebuild the tray menu so newly added or renamed profiles show up
+        without needing 'Reload' by hand."""
+        rebuild = getattr(self, "_rebuild_menu", None)
+        if rebuild is None or self._icon is None:
+            return
+        try:
+            self._icon.menu = rebuild()
+            self._icon.update_menu()
+        except Exception:
+            pass
 
     def _reset_key(self):
         """The optional 'reset key states' shortcut from settings.json, read
@@ -152,6 +165,7 @@ class Watcher:
                 print("[modeshift] resumed", file=sys.stderr)
             return
         self.reload_config_only()
+        self.refresh_menu()          # profiles may have been added or renamed
         if profile in (None, rc.WATCHER_CMD_AUTO):
             self.set_manual(AUTO)
         else:
@@ -214,15 +228,13 @@ class Watcher:
             layout = rc.resolve_mode_layout(mode)
             colors = rc.build_color_array(layout, self.led_lookup, len(self.device.leds))
             # Set only this device's own LED array -- never "Apply All Devices".
-            if rc.mode_has_effects(mode) and self._reactive is not None:
-                # The engine owns the board while any zone has an effect: it
-                # composites this static layout with each zone's effect and
-                # pushes frames itself.
+            # The engine always runs, even for a mode with no effects: some
+            # keyboards revert to their own firmware lighting if the host stops
+            # sending direct-mode frames, so it keeps a static layout alive too.
+            if self._reactive is not None:
                 self._reactive.configure(colors, mode)
                 self._reactive.start()
             else:
-                if self._reactive is not None:
-                    self._reactive.stop()
                 self.device.set_colors(colors)
             self._last_applied = signature
             self._update_icon(mode, name, mode_name)
@@ -307,7 +319,9 @@ class Watcher:
                         result = rc.get_active_window()
                         if result is not None:
                             win_class, pid = result
-                            name = rc.resolve_profile_name(win_class, pid, self._profiles())
+                            name = rc.resolve_profile_name(
+                                win_class, pid, self._profiles(),
+                                self.config.get("default_profile"))
                             self.apply_profile(name)
                 except Exception as e:
                     print(f"[modeshift_watcher] error in poll loop: {e}", file=sys.stderr)
@@ -498,12 +512,28 @@ def build_tray(watcher: Watcher):
         if watcher._reactive is not None:
             watcher._reactive.reset_key_states()
 
+    def on_open_editor(icon, item):
+        """Launch the editor from the tray."""
+        editor = Path(__file__).parent / "modeshift_editor.py"
+        try:
+            if sys.platform.startswith("win"):
+                exe = Path(sys.executable)
+                pythonw = exe.with_name("pythonw.exe")
+                subprocess.Popen(
+                    [str(pythonw if pythonw.exists() else exe), str(editor)],
+                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
+            else:
+                subprocess.Popen([sys.executable, str(editor)],
+                                 start_new_session=True)
+        except Exception as e:
+            print(f"[modeshift] couldn't start the editor: {e}", file=sys.stderr)
+
     def on_reload(icon, item):
         try:
             watcher.reload_config()
             icon.menu = build_menu()
             icon.update_menu()
-            print("[modeshift_watcher] games.json reloaded")
+            print("[modeshift] configuration reloaded")
         except Exception as e:
             print(f"[modeshift_watcher] failed to reload config: {e}", file=sys.stderr)
 
@@ -534,11 +564,13 @@ def build_tray(watcher: Watcher):
                              checked=lambda item: watcher._manual == AUTO),
             *profile_items,
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Open editor", on_open_editor),
             pystray.MenuItem("Reset key states", on_reset_states),
-            pystray.MenuItem("Reload games.json", on_reload),
+            pystray.MenuItem("Reload configuration", on_reload),
             pystray.MenuItem("Quit", on_quit),
         )
 
+    watcher._rebuild_menu = build_menu      # so the watcher can refresh it live
     default_prof = watcher._profiles().get(rc.DEFAULT_PROFILE_NAME, {})
     start_color = representative_color(rc.get_active_mode(default_prof)) if default_prof else "2F00FF"
     watcher._icon_color = start_color

@@ -26,3 +26,5 @@ env/
 .DS_Store
 RELEASE_NOTES_*.md
 *.bak
+modeshift.json
+watcher.pid
