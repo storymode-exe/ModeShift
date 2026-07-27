@@ -1,4 +1,6 @@
-# ModeShift
+<p align="center">
+  <img src="assets/modeshift-banner.png" alt="ModeShift" width="640">
+</p>
 
 **RGB lighting profiles for OpenRGB keyboards on Linux.**
 

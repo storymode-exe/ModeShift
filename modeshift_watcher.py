@@ -485,21 +485,58 @@ def representative_color(mode: dict) -> str:
     return base
 
 
-def make_icon_image(color_hex="2F00FF", paused=False):
-    color_hex = color_hex.lstrip("#")
-    rgb = tuple(int(color_hex[i:i + 2], 16) for i in (0, 2, 4))
-    img = Image.new("RGB", (64, 64), rgb)
-    draw = ImageDraw.Draw(img)
-    draw.rectangle((0, 0, 63, 63), outline=(128, 128, 128), width=3)
+BRAND_PURPLE = (106, 61, 255)      # the half that never changes
+ICON_TILT = 45                     # extra rotation, degrees
+ICON_CLOCKWISE = True              # swirl direction
+
+
+def make_icon_image(color_hex="FF5A00", paused=False):
+    """ModeShift's mark: a yin-yang where one half is the brand purple and the
+    other takes the colour of the mode currently applied, so the tray tells you
+    at a glance which profile you are on."""
+    color_hex = (color_hex or "FF5A00").lstrip("#")
+    try:
+        live = tuple(int(color_hex[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        live = (255, 90, 0)
+    if sum(live) < 40:                      # a near-black mode would vanish
+        live = (255, 90, 0)
+
+    S, ss = 64, 8                            # draw big, shrink for smooth edges
+    n = S * ss
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    pad = 2 * ss
+    box = (pad, pad, n - pad, n - pad)
+    r = (n - 2 * pad) / 2
+    cx = cy = n / 2
+
+    # purple on top, live colour below, with the swirl reading clockwise
+    d.ellipse(box, fill=live)
+    d.pieslice(box, 180, 360, fill=BRAND_PURPLE)
+    side = 1 if ICON_CLOCKWISE else -1
+    d.ellipse((cx + side * r / 2 - r / 2, cy - r / 2,
+               cx + side * r / 2 + r / 2, cy + r / 2), fill=BRAND_PURPLE)
+    d.ellipse((cx - side * r / 2 - r / 2, cy - r / 2,
+               cx - side * r / 2 + r / 2, cy + r / 2), fill=live)
+
+    # tilt the mark itself; the pause bars stay upright so they read as a
+    # pause button rather than part of the swirl
+    if ICON_TILT:
+        img = img.rotate(ICON_TILT, resample=Image.BICUBIC)
+
     if paused:
-        # two bars, in whichever of black/white stands out on this colour
-        bright = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-        bar = (0, 0, 0) if bright > 140 else (255, 255, 255)
-        edge = (255, 255, 255) if bar == (0, 0, 0) else (0, 0, 0)
-        for x0 in (18, 36):
-            draw.rectangle((x0 - 1, 15, x0 + 11, 49), fill=edge)
-            draw.rectangle((x0, 16, x0 + 10, 48), fill=bar)
-    return img
+        d = ImageDraw.Draw(img)
+        bar_w, bar_h = r / 4, r * 0.9
+        for sign in (-1, 1):
+            x = cx + sign * r / 3
+            d.rounded_rectangle((x - bar_w / 2, cy - bar_h / 2,
+                                 x + bar_w / 2, cy + bar_h / 2),
+                                radius=bar_w / 3, fill=(20, 22, 27),
+                                outline=(255, 255, 255), width=ss)
+
+    return img.resize((S, S), Image.LANCZOS)
 
 
 def build_tray(watcher: Watcher):

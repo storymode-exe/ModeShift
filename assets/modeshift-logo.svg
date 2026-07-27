@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="ModeShift">
+  <title>ModeShift</title>
+  <!-- The mark: a yin-yang tilted an eighth of a turn. The purple half is the
+       constant brand colour; in the tray the other half takes the colour of
+       the profile currently applied. -->
+  <g transform="rotate(-45 256 256)">
+    <circle cx="256" cy="256" r="240" fill="#FF5A00"/>
+    <path d="M 16 256
+             A 240 240 0 0 1 496 256
+             A 120 120 0 0 1 256 256
+             A 120 120 0 0 0 16 256 Z"
+          fill="#6A3DFF"/>
+  </g>
+</svg>

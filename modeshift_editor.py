@@ -678,8 +678,9 @@ class MainWindow(QMainWindow):
             pbtns.addWidget(b)
         # the default-profile toggle rides along in this row rather than taking
         # a row of its own, which would push the panel into a scrollbar
-        self.default_btn = QPushButton("★")
-        self.default_btn.setFixedWidth(32)
+        # U+FE0E forces the plain text star rather than a colour emoji
+        self.default_btn = QPushButton("★︎")
+        self.default_btn.setFixedWidth(34)
         self.default_btn.clicked.connect(self._on_set_default_profile)
         pbtns.addWidget(self.default_btn)
         v.addLayout(pbtns)
@@ -712,14 +713,13 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(slot)
             mbtns.addWidget(b)
-        v.addLayout(mbtns)
-
-        self.set_active_btn = QPushButton("● Start the profile on this mode")
-        self.set_active_btn.setToolTip(
-            "When this profile is applied, the watcher starts on this mode. "
-            "Key functions can switch modes afterwards without changing it.")
+        # matches the profile row: the marker button rides along instead of
+        # taking a row of its own
+        self.set_active_btn = QPushButton("●︎")
+        self.set_active_btn.setFixedWidth(34)
         self.set_active_btn.clicked.connect(self._on_set_active_mode)
-        v.addWidget(self.set_active_btn)
+        mbtns.addWidget(self.set_active_btn)
+        v.addLayout(mbtns)
 
         v.addWidget(self._hline())
         self.live_check = QCheckBox("Live preview on keyboard")
@@ -1894,11 +1894,23 @@ class MainWindow(QMainWindow):
             self.mode_list.addItem(QListWidgetItem(label))
         self.mode_list.setCurrentRow(names.index(self.current_mode_name))
         self._loading = False
+        self._sync_active_mode_button()
         self._reload_zones()
         # keep the Functions tab's mode target dropdowns in sync with the
         # current mode list (fixes new modes not appearing until restart)
         if hasattr(self, "press_action"):
             self._load_func_editor()
+
+    def _sync_active_mode_button(self):
+        if not hasattr(self, "set_active_btn"):
+            return
+        is_start = self.current_mode_name == self._profile().get("active_mode")
+        self.set_active_btn.setEnabled(not is_start)
+        self.set_active_btn.setToolTip(
+            f"This profile starts on '{self.current_mode_name}'."
+            if is_start else
+            "Start this profile on this mode. Key functions can switch modes "
+            "afterwards without changing it.")
 
     def _reload_zones(self):
         self._loading = True
@@ -1981,8 +1993,7 @@ class MainWindow(QMainWindow):
             if is_default else
             "Make this the default profile (used when the focused window "
             "matches nothing).")
-        self.default_btn.setStyleSheet(
-            "color:#FFD700; font-size:15px;" if is_default else "font-size:15px;")
+        # no colour or size override: it should match New / Rename / Delete
 
     def _on_new_profile(self):
         name, ok = QInputDialog.getText(self, "New Profile", "Profile name:")
@@ -2182,6 +2193,7 @@ class MainWindow(QMainWindow):
         if row < len(names):
             self.current_mode_name = names[row]
             self.selected_keys.clear()
+            self._sync_active_mode_button()
             self._reload_zones()
             self._apply_live()  # push the newly-selected mode to the keyboard
 
@@ -3186,8 +3198,26 @@ class MainWindow(QMainWindow):
         self.status_label.setText(text)
 
 
+def app_icon():
+    """The ModeShift mark, loaded from assets/ next to this script. Returns an
+    empty QIcon if the assets folder is missing, which Qt treats as 'no icon'."""
+    icon = QIcon()
+    assets = Path(__file__).resolve().parent / "assets"
+    for size in (16, 24, 32, 48, 64, 128, 256, 512):
+        png = assets / f"modeshift-{size}.png"
+        if png.exists():
+            icon.addFile(str(png))
+    return icon
+
+
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setDesktopFileName("modeshift-editor")
+    icon = app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     try:
         cfg = rc.load_config()
     except FileNotFoundError:
