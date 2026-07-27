@@ -2992,6 +2992,14 @@ class MainWindow(QMainWindow):
     def _push_to_keyboard(self):
         try:
             mode = self._mode()
+            # If the watcher is running, let IT render the preview: it owns the
+            # keyboard and is the only process reading key presses, so type
+            # lighting, key functions and key states keep working while you edit.
+            if rc.read_watcher_pid() is not None:
+                self._preview.stop()
+                rc.write_watcher_preview(self.current_profile_name, mode)
+                self._status("Live preview (rendered by the watcher).")
+                return
             layout = rc.resolve_mode_layout(mode)
             colors = rc.build_color_array(layout, self.led_lookup, len(self.device.leds))
             if rc.mode_has_effects(mode):
@@ -3008,17 +3016,15 @@ class MainWindow(QMainWindow):
             self._status(f"Failed to apply: {e}")
 
     def _on_live_toggled(self, on):
-        # a running watcher and this preview would otherwise both drive the
-        # same LEDs, which looks like two effects fighting
-        try:
-            rc.write_watcher_pause(bool(on))
-        except Exception:
-            pass
         if on:
             self._apply_live()
         else:
             self._preview.stop()
-            self._status("Live preview off. The watcher has the keyboard again.")
+            try:
+                rc.write_watcher_preview_off()
+            except Exception:
+                pass
+            self._status("Live preview off. The watcher follows your games again.")
 
     def closeEvent(self, e):
         try:
@@ -3026,7 +3032,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            rc.write_watcher_pause(False)   # hand the keyboard back
+            rc.write_watcher_preview_off()  # back to following your games
         except Exception:
             pass
         super().closeEvent(e)
@@ -3123,11 +3129,6 @@ def main():
     # exactly that minimum rather than something taller
     win.setMinimumSize(w, h)
     win.resize(w, h)
-    # live preview starts on, so tell any running watcher to stand down
-    try:
-        rc.write_watcher_pause(True)
-    except Exception:
-        pass
     win.show()
     sys.exit(app.exec())
 

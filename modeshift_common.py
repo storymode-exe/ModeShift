@@ -487,9 +487,27 @@ def write_watcher_command(profile_name: str, path: Path = None):
 
 
 def write_watcher_pause(paused: bool, path: Path = None):
-    """Ask a running watcher to stop or resume driving the keyboard, so the
-    editor's live preview does not fight it for the same LEDs."""
+    """Ask a running watcher to stop or resume driving the keyboard."""
     write_watcher_command(WATCHER_CMD_PAUSE if paused else WATCHER_CMD_RESUME, path)
+
+
+def write_watcher_preview(profile_name: str, mode: dict, path: Path = None):
+    """Hand the editor's in-progress mode to the watcher to render.
+
+    The watcher owns the keyboard and is the only process reading key presses,
+    so previewing through it keeps type lighting, key functions and key states
+    working while you edit, instead of the two fighting over the LEDs."""
+    path = path or WATCHER_CMD_PATH
+    try:
+        path.write_text(json.dumps(
+            {"preview": {"profile": profile_name, "mode": mode}}))
+    except OSError:
+        pass
+
+
+def write_watcher_preview_off(path: Path = None):
+    """Stop previewing and go back to following the focused window."""
+    write_watcher_command(WATCHER_CMD_AUTO, path)
 
 
 def read_watcher_command(path: Path = None):

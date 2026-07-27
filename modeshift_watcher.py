@@ -72,15 +72,12 @@ class Watcher:
         self._icon = None                  # tray icon, set by main() for live updates
         self._icon_color = "2F00FF"        # last mode colour, for icon redraws
         self._icon_title = "ModeShift"
-        # Seed with the current command-file contents so a stale profile switch
-        # from a previous session doesn't fire on startup. A pause IS honoured
-        # though: if the editor is already open with live preview on, a watcher
-        # starting up must not grab the keyboard back from it.
+        self._preview = None               # (profile, mode) sent by the editor
+        # Seed with the current command-file contents so a stale command from a
+        # previous session doesn't fire on startup. We never start paused: the
+        # editor previews through us now rather than pausing us, so a leftover
+        # pause in the file must not strand the keyboard.
         self._cmd_text = self._command_text()
-        if (rc.read_watcher_command() or {}).get("profile") == rc.WATCHER_CMD_PAUSE:
-            self._paused.set()
-            print("[modeshift] starting paused (the editor has the keyboard)",
-                  file=sys.stderr)
         self._connect()
 
     def _reset_key(self):
@@ -128,7 +125,20 @@ class Watcher:
         cmd = rc.read_watcher_command()
         if not cmd:
             return
+        # live preview: the editor hands us the mode it is editing and we
+        # render it, so key input keeps working while you edit
+        preview = cmd.get("preview")
+        if isinstance(preview, dict) and isinstance(preview.get("mode"), dict):
+            self._preview = (preview.get("profile") or rc.DEFAULT_PROFILE_NAME,
+                             rc._normalize_mode(dict(preview["mode"])))
+            self._last_applied = "__unset__"
+            self.apply_profile(self._preview[0])
+            return
+
         profile = cmd.get("profile")
+        if self._preview is not None and profile is not None:
+            self._preview = None          # any other command ends the preview
+            self._last_applied = "__unset__"
         # the editor pauses us while its live preview owns the keyboard
         if profile == rc.WATCHER_CMD_PAUSE:
             if not self.is_paused():
@@ -190,6 +200,12 @@ class Watcher:
         override = self._mode_override
         mode_name = override if override in modes else prof.get("active_mode")
         mode = modes.get(mode_name) or rc.get_active_mode(prof)
+
+        # while the editor is previewing, render what it sent us instead
+        if self._preview is not None and self._mode_override is None:
+            name, mode = self._preview[0], self._preview[1]
+            mode_name = "__preview__"
+            self._active_profile_name = name
 
         signature = (name, mode_name)
         with self._apply_lock:
