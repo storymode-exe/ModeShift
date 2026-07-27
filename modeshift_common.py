@@ -54,10 +54,63 @@ try:
 except Exception:  # enum missing/renamed in some versions -> fall back to matrix test
     _DEVICE_TYPE_KEYBOARD = None
 
-CONFIG_PATH = Path(__file__).parent / "modeshift.json"
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+IS_WINDOWS = sys.platform.startswith("win")
+
+
+def app_dir() -> Path:
+    """Where ModeShift keeps its configuration.
+
+    Run from a checkout, that is the folder holding these .py files. In a
+    packaged build it is the folder holding the .exe, which keeps the portable
+    build genuinely portable: settings travel with it, and nothing is written
+    into the temporary folder PyInstaller unpacks itself into."""
+    if IS_FROZEN:
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def asset_dir() -> Path:
+    """Where the bundled images live. PyInstaller unpacks data files under
+    sys._MEIPASS; from a checkout they sit in ./assets."""
+    if IS_FROZEN:
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bundled = Path(meipass) / "assets"
+            if bundled.is_dir():
+                return bundled
+    return app_dir() / "assets"
+
+
+def program_command(which: str, *args) -> list:
+    """The command line that launches ModeShift's other half.
+
+    'editor' or 'watcher'. In a packaged build these are sibling .exe files; in
+    a checkout they are scripts run with the current interpreter (pythonw on
+    Windows, so no console window appears)."""
+    if IS_FROZEN:
+        exe = "ModeShift.exe" if which == "editor" else "ModeShiftWatcher.exe"
+        if not IS_WINDOWS:
+            exe = exe[:-4]
+        return [str(app_dir() / exe), *args]
+    script = ("modeshift_editor.py" if which == "editor"
+              else "modeshift_watcher.py")
+    path = app_dir() / script
+    if not path.exists():                       # pre-rename checkout
+        path = app_dir() / ("modeshift_editor.py" if which == "editor"
+                            else "modeshift_watcher.py")
+    python = sys.executable
+    if IS_WINDOWS:
+        pythonw = Path(python).with_name("pythonw.exe")
+        if pythonw.exists():
+            python = str(pythonw)
+    return [python, str(path), *args]
+
+
+CONFIG_PATH = app_dir() / "modeshift.json"
 # the config used to be games.json; it is read (and migrated on next save) if
 # the new name isn't there yet, so nobody's setup disappears on upgrade
-LEGACY_CONFIG_PATH = Path(__file__).parent / "games.json"
+LEGACY_CONFIG_PATH = app_dir() / "games.json"
 
 
 def config_path_for_reading(path: Path = None) -> Path:

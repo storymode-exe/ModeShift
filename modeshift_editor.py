@@ -63,15 +63,53 @@ APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
 
 WATCHER_SCRIPT = Path(__file__).parent / "modeshift_watcher.py"
-IS_WINDOWS = sys.platform.startswith("win")
-if IS_WINDOWS:
-    # the per-user Startup folder: anything here runs at login
-    AUTOSTART_FILE = (Path(os.environ.get("APPDATA", Path.home())) / "Microsoft" /
-                      "Windows" / "Start Menu" / "Programs" / "Startup" /
-                      "ModeShift Watcher.bat")
-else:
-    AUTOSTART_FILE = (Path.home() / ".config" / "autostart" /
-                      "modeshift-watcher.desktop")
+IS_WINDOWS = rc.IS_WINDOWS
+# Windows autostart goes through the registry's Run key rather than a .bat in
+# the Startup folder: no console window flashes up at login, and it works the
+# same whether ModeShift is a packaged .exe or a checkout.
+WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+WIN_RUN_NAME = "ModeShift Watcher"
+# the old Startup-folder entry, removed on upgrade so it can't double-launch
+LEGACY_WIN_AUTOSTART = (Path(os.environ.get("APPDATA", Path.home())) / "Microsoft" /
+                        "Windows" / "Start Menu" / "Programs" / "Startup" /
+                        "ModeShift Watcher.bat")
+AUTOSTART_FILE = (Path.home() / ".config" / "autostart" /
+                  "modeshift-watcher.desktop")
+
+
+def _win_autostart_command() -> str:
+    """The command Windows should run at login, quoted for the registry."""
+    cmd = rc.program_command("watcher", "--wait")
+    return " ".join(f'"{c}"' if " " in c else c for c in cmd)
+
+
+def win_autostart_enabled() -> bool:
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WIN_RUN_KEY) as key:
+            winreg.QueryValueEx(key, WIN_RUN_NAME)
+        return True
+    except (ImportError, OSError):
+        return False
+
+
+def set_win_autostart(on: bool):
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WIN_RUN_KEY, 0,
+                        winreg.KEY_SET_VALUE) as key:
+        if on:
+            winreg.SetValueEx(key, WIN_RUN_NAME, 0, winreg.REG_SZ,
+                              _win_autostart_command())
+        else:
+            try:
+                winreg.DeleteValue(key, WIN_RUN_NAME)
+            except FileNotFoundError:
+                pass
+    LEGACY_WIN_AUTOSTART.unlink(missing_ok=True)
+
+
+def autostart_enabled() -> bool:
+    return win_autostart_enabled() if IS_WINDOWS else AUTOSTART_FILE.exists()
 
 CUSTOM_COLORS_PATH = rc.CONFIG_PATH.parent / "custom_colors.json"
 SETTINGS_PATH = rc.CONFIG_PATH.parent / "settings.json"
@@ -1249,9 +1287,10 @@ class MainWindow(QMainWindow):
 
         self.set_autostart_chk = QCheckBox("Start the watcher when I log in")
         self.set_autostart_chk.setToolTip(
-            "Writes a desktop autostart entry so the tray watcher launches "
-            "automatically. The editor does not start on login, only the watcher.")
-        self.set_autostart_chk.setChecked(AUTOSTART_FILE.exists())
+            "Adds a login entry so the tray watcher launches automatically: a "
+            "registry Run value on Windows, a desktop autostart file on Linux. "
+            "The editor does not start on login, only the watcher.")
+        self.set_autostart_chk.setChecked(autostart_enabled())
         self.set_autostart_chk.toggled.connect(self._on_autostart_toggled)
         v.addWidget(self.set_autostart_chk)
         self.autostart_note = QLabel("")
@@ -1379,26 +1418,27 @@ class MainWindow(QMainWindow):
         return box
 
     def _sync_autostart_note(self):
-        if AUTOSTART_FILE.exists():
+        if autostart_enabled():
+            launched = (_win_autostart_command() if IS_WINDOWS
+                        else f"python3 {rc.program_command('watcher')[-1]} --wait")
             self.autostart_note.setText(
-                f"<i>On. Launching from:<br><tt>{WATCHER_SCRIPT}</tt></i>")
+                f"<i>On. Launching from:<br><tt>{launched}</tt></i>")
         else:
             self.autostart_note.setText(
                 "<i>Off. The watcher only runs when you start it yourself.</i>")
 
     def _on_autostart_toggled(self, on):
-        """Create or remove the desktop autostart entry for the watcher."""
+        """Create or remove the login entry for the watcher: a registry Run
+        value on Windows, a desktop autostart file everywhere else."""
         try:
+            if IS_WINDOWS:
+                set_win_autostart(on)
+                self._status("The watcher will start automatically on login." if on
+                             else "Removed the watcher from login startup.")
+                self._sync_autostart_note()
+                return
             if on:
                 AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
-                if IS_WINDOWS:
-                    # pythonw + start = no console window on login
-                    AUTOSTART_FILE.write_text(
-                        "@echo off\r\n"
-                        f'start "" pythonw "{WATCHER_SCRIPT}" --wait\r\n')
-                    self._status("The watcher will start automatically on login.")
-                    self._sync_autostart_note()
-                    return
                 AUTOSTART_FILE.write_text(
                     "[Desktop Entry]\n"
                     "Type=Application\n"
@@ -1407,8 +1447,8 @@ class MainWindow(QMainWindow):
                     "Comment=Switches keyboard lighting per focused game\n"
                     # --wait retries the OpenRGB connection: on login the SDK
                     # server is often a moment behind us
-                    f"Exec=python3 {WATCHER_SCRIPT} --wait\n"
-                    "Icon=input-keyboard\n"
+                    f"Exec=python3 {rc.program_command('watcher')[-1]} --wait\n"
+                    f"Icon={rc.asset_dir() / 'modeshift-256.png'}\n"
                     "Terminal=false\n"
                     "Categories=Utility;\n"
                     "X-GNOME-Autostart-enabled=true\n"
@@ -3169,7 +3209,7 @@ class MainWindow(QMainWindow):
             return
         try:
             rc.stop_running_watcher()      # by PID, so it works on any platform
-            if not IS_WINDOWS:
+            if not IS_WINDOWS and not rc.IS_FROZEN:
                 # also catch watchers started before PID files existed
                 subprocess.run(["pkill", "-f", WATCHER_SCRIPT.name],
                                capture_output=True)
@@ -3179,16 +3219,12 @@ class MainWindow(QMainWindow):
             log = open(log_path, "a")
             kwargs = {"stdout": log, "stderr": log}
             if IS_WINDOWS:
-                # pythonw so no console window pops up, and detach from us
-                exe = Path(sys.executable)
-                pythonw = exe.with_name("pythonw.exe")
-                python = str(pythonw if pythonw.exists() else exe)
+                # detached, and with no console window of its own
                 kwargs["creationflags"] = (subprocess.CREATE_NO_WINDOW |
                                            subprocess.DETACHED_PROCESS)
             else:
-                python = sys.executable
                 kwargs["start_new_session"] = True
-            subprocess.Popen([python, str(WATCHER_SCRIPT)], **kwargs)
+            subprocess.Popen(rc.program_command("watcher"), **kwargs)
             self._status(f"Watcher (re)started. Check your tray for its icon "
                          f"(log: {log_path}).")
         except Exception as e:
@@ -3202,7 +3238,7 @@ def app_icon():
     """The ModeShift mark, loaded from assets/ next to this script. Returns an
     empty QIcon if the assets folder is missing, which Qt treats as 'no icon'."""
     icon = QIcon()
-    assets = Path(__file__).resolve().parent / "assets"
+    assets = rc.asset_dir()
     for size in (16, 24, 32, 48, 64, 128, 256, 512):
         png = assets / f"modeshift-{size}.png"
         if png.exists():

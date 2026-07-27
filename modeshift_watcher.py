@@ -551,17 +551,14 @@ def build_tray(watcher: Watcher):
 
     def on_open_editor(icon, item):
         """Launch the editor from the tray."""
-        editor = Path(__file__).parent / "modeshift_editor.py"
+        cmd = rc.program_command("editor")
         try:
             if sys.platform.startswith("win"):
-                exe = Path(sys.executable)
-                pythonw = exe.with_name("pythonw.exe")
                 subprocess.Popen(
-                    [str(pythonw if pythonw.exists() else exe), str(editor)],
+                    cmd,
                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
             else:
-                subprocess.Popen([sys.executable, str(editor)],
-                                 start_new_session=True)
+                subprocess.Popen(cmd, start_new_session=True)
         except Exception as e:
             print(f"[modeshift] couldn't start the editor: {e}", file=sys.stderr)
 
