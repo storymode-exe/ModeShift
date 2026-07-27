@@ -1218,6 +1218,54 @@ class MainWindow(QMainWindow):
         box = QGroupBox("Settings")
         v = QVBoxLayout(box)
 
+        # --- Device ---
+        v.addWidget(QLabel("<b>Keyboard</b>"))
+        dev_row = QHBoxLayout()
+        self.set_device_combo = QComboBox()
+        self.set_device_combo.addItem(self.device_name, self.device_name)
+        self.set_device_combo.setToolTip(
+            "Which OpenRGB device ModeShift lights up. Change this if it picked "
+            "the wrong one (some RGB controllers also report a key matrix).")
+        dev_row.addWidget(self.set_device_combo, 1)
+        pick_btn = QPushButton("Use this device")
+        pick_btn.clicked.connect(self._on_device_chosen)
+        dev_row.addWidget(pick_btn)
+        v.addLayout(dev_row)
+        v.addWidget(QLabel(
+            "<i>Reopen the editor after changing this. If your keyboard is "
+            "missing, make sure OpenRGB lists it before starting ModeShift.</i>"))
+        QTimer.singleShot(0, self._populate_device_combo)
+
+        v.addWidget(self._hline())
+
+        # --- Watcher ---
+        v.addWidget(QLabel("<b>Watcher</b>"))
+
+        self.set_autostart_chk = QCheckBox("Start the watcher when I log in")
+        self.set_autostart_chk.setToolTip(
+            "Writes a desktop autostart entry so the tray watcher launches "
+            "automatically. The editor does not start on login, only the watcher.")
+        self.set_autostart_chk.setChecked(AUTOSTART_FILE.exists())
+        self.set_autostart_chk.toggled.connect(self._on_autostart_toggled)
+        v.addWidget(self.set_autostart_chk)
+        self.autostart_note = QLabel("")
+        v.addWidget(self.autostart_note)
+        self._sync_autostart_note()
+        poll_row = QHBoxLayout()
+        poll_row.addWidget(QLabel("Poll interval (seconds)"))
+        self.set_poll_spin = QSpinBox()
+        self.set_poll_spin.setRange(1, 10)
+        self.set_poll_spin.setValue(int(round(self.cfg.get("poll_interval_seconds", 1.5))))
+        self.set_poll_spin.valueChanged.connect(self._on_poll_changed)
+        poll_row.addWidget(self.set_poll_spin)
+        poll_row.addStretch(1)
+        v.addLayout(poll_row)
+        v.addWidget(QLabel(
+            "<i>How often the watcher checks the focused window. Lower = snappier "
+            "profile switching, slightly more CPU. Save + Restart Watcher to apply.</i>"))
+
+        v.addWidget(self._hline())
+
         # --- Detect-from-window feedback ---
         v.addWidget(QLabel("<b>Detect-from-window cues</b>"))
 
@@ -1260,34 +1308,6 @@ class MainWindow(QMainWindow):
         dur_row.addWidget(self.set_dur_spin)
         dur_row.addStretch(1)
         v.addLayout(dur_row)
-
-        v.addWidget(self._hline())
-
-        # --- Watcher ---
-        v.addWidget(QLabel("<b>Watcher</b>"))
-
-        self.set_autostart_chk = QCheckBox("Start the watcher when I log in")
-        self.set_autostart_chk.setToolTip(
-            "Writes a desktop autostart entry so the tray watcher launches "
-            "automatically. The editor does not start on login, only the watcher.")
-        self.set_autostart_chk.setChecked(AUTOSTART_FILE.exists())
-        self.set_autostart_chk.toggled.connect(self._on_autostart_toggled)
-        v.addWidget(self.set_autostart_chk)
-        self.autostart_note = QLabel("")
-        v.addWidget(self.autostart_note)
-        self._sync_autostart_note()
-        poll_row = QHBoxLayout()
-        poll_row.addWidget(QLabel("Poll interval (seconds)"))
-        self.set_poll_spin = QSpinBox()
-        self.set_poll_spin.setRange(1, 10)
-        self.set_poll_spin.setValue(int(round(self.cfg.get("poll_interval_seconds", 1.5))))
-        self.set_poll_spin.valueChanged.connect(self._on_poll_changed)
-        poll_row.addWidget(self.set_poll_spin)
-        poll_row.addStretch(1)
-        v.addLayout(poll_row)
-        v.addWidget(QLabel(
-            "<i>How often the watcher checks the focused window. Lower = snappier "
-            "profile switching, slightly more CPU. Save + Restart Watcher to apply.</i>"))
 
         v.addWidget(self._hline())
 
@@ -1403,6 +1423,40 @@ class MainWindow(QMainWindow):
             self._set_setting("saved_color_slots", int(val))
             self._status(f"Saved color slots set to {val}. "
                          f"Reopen the editor to apply.")
+
+    def _populate_device_combo(self):
+        """List every OpenRGB device with a key matrix, so a wrong auto-pick
+        can be corrected."""
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+        try:
+            names = [d.name for d in rc.candidate_devices(client)]
+        except Exception:
+            return
+        if self.device_name not in names:
+            names.insert(0, self.device_name)
+        self.set_device_combo.blockSignals(True)
+        self.set_device_combo.clear()
+        for n in names:
+            self.set_device_combo.addItem(n, n)
+        i = self.set_device_combo.findData(self.device_name)
+        self.set_device_combo.setCurrentIndex(max(0, i))
+        self.set_device_combo.blockSignals(False)
+
+    def _on_device_chosen(self):
+        name = self.set_device_combo.currentData()
+        if not name or name == self.device_name:
+            self._status(f"Already using '{self.device_name}'.")
+            return
+        self.cfg["active_device"] = name
+        self.cfg.setdefault("devices", {}).setdefault(name, {"profiles": {}})
+        try:
+            rc.save_config(self.cfg, self.config_path)
+            self._status(f"Device set to '{name}'. Reopen the editor and restart "
+                         f"the watcher to use it.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
 
     def _on_scale_changed(self, _idx):
         val = self.set_scale_combo.currentData()
@@ -3121,6 +3175,7 @@ def main():
         sys.exit(1)
     try:
         win = MainWindow(cfg, device, device_name, rc.CONFIG_PATH)
+        win.client = client          # for the device picker in Settings
     except Exception as e:
         QMessageBox.critical(None, "Startup error", str(e))
         sys.exit(1)

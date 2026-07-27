@@ -697,6 +697,12 @@ def is_keyboard(device) -> bool:
     return find_matrix_zone(device) is not None
 
 
+def candidate_devices(client) -> list:
+    """Every device ModeShift could drive: anything with a per-key matrix.
+    Used by the editor's device picker, so a wrong auto-pick can be corrected."""
+    return [d for d in client.devices if find_matrix_zone(d) is not None]
+
+
 def list_keyboards(client) -> list:
     """Connected keyboards, preferring ones with a per-key matrix (what the
     editor needs to draw), and never returning non-keyboard devices like the
@@ -768,12 +774,35 @@ def select_device(cfg: dict, client, preferred: str = None):
     if device is None:
         device = keyboards[0]
 
+    ensure_direct_mode(device)      # otherwise set_colors silently does nothing
+
     name = device.name
     cfg.setdefault("devices", {})
     if name not in cfg["devices"]:
         cfg["devices"][name] = {"profiles": _profiles_for_new_device(cfg, device)}
     cfg["active_device"] = name
     return device, name
+
+
+def ensure_direct_mode(device) -> bool:
+    """Put the device into Direct mode so live per-LED colours actually apply.
+
+    In a hardware/firmware mode OpenRGB ignores set_colors, which looks like
+    ModeShift doing nothing at all. Harmless if the device is already Direct or
+    has no such mode."""
+    try:
+        current = getattr(getattr(device, "active_mode", None), "name", "") or ""
+        if current.lower() == "direct":
+            return True
+    except Exception:
+        pass
+    for name in ("Direct", "direct"):
+        try:
+            device.set_mode(name)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def led_shorthand(led) -> str:
