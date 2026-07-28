@@ -1,3 +1,5 @@
+
+
 <p align="center">
   <img src="assets/modeshift-banner.png" alt="ModeShift" width="640">
 </p>
@@ -12,7 +14,7 @@ OpenRGB-style lighting profile manager focused on gaming.
 It is not a replacement for OpenRGB. OpenRGB does the hardware talking; ModeShift
 sits on top of it and manages the lighting logic.
 
-<!-- Drag your demo video in here on github.com to embed it above the screenshots -->
+https://github.com/user-attachments/assets/e1ecf5ac-b1d8-491f-83fd-bf29eee6163f
 
 ## Screenshots
 
