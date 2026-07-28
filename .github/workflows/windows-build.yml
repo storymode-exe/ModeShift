@@ -34,9 +34,12 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
+        # Pinned to the versions that produced the v1.5.0 build. Without this an
+        # upstream release could break a future build without anything in this
+        # repo changing. Bump them deliberately, and check the build stays green.
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller openrgb-python psutil pystray pillow pynput PySide6
+          pip install pyinstaller==6.21.0 openrgb-python==0.3.6 psutil==7.2.2 pystray==0.19.5 pillow==12.3.0 pynput==1.8.2 PySide6==6.11.1
 
       - name: Build
         run: python -m PyInstaller --clean --noconfirm packaging/modeshift.spec
