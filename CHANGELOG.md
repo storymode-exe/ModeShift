@@ -2,6 +2,58 @@
 
 All notable changes to ModeShift are documented here.
 
+## v1.5.0
+
+### Added
+- **Windows support.** ModeShift now runs on Windows as well as Linux. Focused
+  window detection uses `user32`, key capture uses `pynput`, and neither needs
+  any special permissions. Because Windows window classes are often generic
+  (`UnrealWindow`, `Chrome_WidgetWin_1`), matching also considers the process
+  name and prefers it when the class is one of the known generic ones.
+- **Portable Windows build.** `ModeShift-windows-portable.zip` on the releases
+  page contains `ModeShift.exe` (the editor) and `ModeShiftWatcher.exe` (the tray
+  daemon). Unzip anywhere writable and run it; there is no installer and nothing
+  in the registry except the autostart entry. Build it yourself from a checkout
+  with `packaging\build.bat`.
+- **Windows autostart**, driven by the same *Start the watcher when I log in*
+  checkbox in Settings. It writes a single registry Run value under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` and unticking removes it.
+  No console window appears at login.
+- **A logo.** ModeShift has a mark now: a yin-yang where one half is the brand
+  purple and the other takes the color of the profile currently applied, so the
+  tray tells you which profile is live at a glance. Shipped as SVG, PNGs, and a
+  multi-size `.ico`, and used for the app icon, the window icon, and the tray.
+- **Duplicate** buttons for profiles and modes. A duplicated profile copies its
+  modes, zones, effects, functions, and key states, but starts with an empty
+  match string, since two profiles matching the same window would be ambiguous.
+- **The editor remembers its window size and position** between launches. The
+  keyboard-derived size is still a hard floor so the board can never be clipped.
+  A saved geometry is clamped to the current screen, so unplugging a monitor
+  cannot strand the window off screen.
+
+### Changed
+- The **Default profile can now be deleted**. Delete every profile and a blank
+  Default takes its place, since the editor and the watcher both need somewhere
+  to fall back to. If the deleted profile was the starred default, the star
+  clears with it.
+- Configuration is resolved next to the executable in a packaged build, and next
+  to the sources when run from a checkout, so the portable build keeps its
+  settings with it instead of in a temporary folder.
+- The modes list stops at nine rows and scrolls, rather than growing until the
+  whole profile panel needs a scrollbar.
+
+### Fixed
+- **The keyboard stayed on its firmware lighting after login on Linux** until you
+  touched the tray. The poll loop did nothing at all when the focused window
+  could not be read, which is exactly the state right after login, before
+  anything has focus. It now falls back to the default profile, so the board
+  lights immediately. Same when no detection tool is installed.
+- **Start/Restart Watcher could leave more than one watcher running**, stacking
+  up tray icons. The PID file only ever names the most recent watcher, so an
+  earlier one (from autostart, for example) survived every restart. ModeShift now
+  finds watchers by process, and the watcher stops any others when it starts, so
+  there can only ever be one.
+
 ## v1.4.0
 
 ### Added

@@ -2,13 +2,12 @@
   <img src="assets/modeshift-banner.png" alt="ModeShift" width="640">
 </p>
 
-**RGB lighting profiles for OpenRGB keyboards on Linux.**
+**RGB lighting profiles for OpenRGB keyboards on Linux and Windows.**
 
 ModeShift gives your OpenRGB-controllable keyboard per-key lighting profiles that
 switch automatically when you change games, plus animated effects, modes you can
 flip between, and per-key indicators for cooldowns and toggles. Think of it as an
-OpenRGB-style lighting profile manager focused on gaming, built for Linux desktops
-(developed on KDE Plasma Wayland).
+OpenRGB-style lighting profile manager focused on gaming.
 
 It is not a replacement for OpenRGB. OpenRGB does the hardware talking; ModeShift
 sits on top of it and manages the lighting logic.
@@ -66,6 +65,7 @@ Detection cues, watcher poll interval, keyboard size, and profile import/export.
 - **Import and export profiles** as portable `.modeshift` files, so you can back
   them up or share them.
 - **Adjustable keyboard size** in the editor (100 to 200%).
+- **Duplicate** any profile or mode, so a variation does not mean starting over.
 
 ## How it works
 
@@ -81,17 +81,54 @@ ModeShift is two programs sharing one config file (`modeshift.json`):
 effects engine. `diagnose_zones.py` is a one-off helper that dumps your keyboard's
 zone and matrix data.
 
-## Requirements
+On Windows the packaged build ships the same two programs as `ModeShift.exe` and
+`ModeShiftWatcher.exe`.
 
-- **OpenRGB** with the SDK Server running (OpenRGB, SDK Server tab, Start Server).
-- **Python 3.9+**.
-- The Python packages in `requirements.txt`.
-- For automatic game detection: `xprop` on X11 (standard X11 utilities) or
-  `kdotool` on KDE Plasma Wayland.
-- For **key functions, type lighting, and key states**: your user in the `input`
-  group.
+---
 
-## Install
+# Install on Windows
+
+**Verified on Windows 11.** Windows support is new as of v1.5.0 and has been
+tested on one machine with one keyboard so far, so a report either way is
+welcome.
+
+1. Download `ModeShift-windows-portable.zip` from the
+   [latest release](https://github.com/storymode-exe/ModeShift/releases/latest).
+2. Unzip it anywhere writable, for example `C:\Tools\ModeShift`. Avoid
+   `Program Files`: your configuration lives beside the executables.
+3. Install [OpenRGB](https://openrgb.org/) and start its SDK server
+   (Settings, SDK Server, Start Server). ModeShift cannot see your keyboard
+   without it.
+4. Run `ModeShift.exe` to set up your profiles.
+5. In the Settings tab, tick **Start the watcher when I log in** if you want the
+   tray daemon running from boot.
+
+Windows SmartScreen will warn you on first launch, because the build is not code
+signed. More info, then Run anyway. Some antivirus products flag PyInstaller
+builds in general; if yours does, the source is right here to build yourself.
+
+There is nothing to install and nothing in the registry except the autostart
+entry, which the Settings checkbox adds and removes. To uninstall, untick
+autostart and delete the folder.
+
+Key capture on Windows uses `pynput` and needs no special permissions or group
+membership.
+
+### Building the Windows package yourself
+
+With Python 3.10 or newer on PATH, from a checkout:
+
+```
+packaging\build.bat
+```
+
+That installs PyInstaller and the runtime dependencies, builds `dist\ModeShift\`,
+and zips it. PyInstaller cannot cross compile, so this has to run on Windows.
+See `packaging\README-windows.md` for details.
+
+---
+
+# Install on Linux
 
 Clone the repo, then install the Python dependencies:
 
@@ -127,10 +164,10 @@ sudo dnf install openrgb python3-pyside6 xprop
 # kdotool: build from source or grab a release (needed only on KDE Wayland)
 ```
 
-### Key input setup (all distros)
+### Key input setup (Linux, all distros)
 
-This step is **not** distro-specific. Everyone who wants hold-to-switch key
-functions, type lighting, or key states must do it, no matter the distro. The
+This step is **not** distro-specific, and it is Linux only. Everyone who wants
+hold-to-switch key functions, type lighting, or key states must do it. The
 watcher reads raw keyboard input, which requires your user to be in the `input`
 group:
 
@@ -144,22 +181,42 @@ First run: copy the example config so ModeShift has something to start from.
 cp modeshift.example.json modeshift.json
 ```
 
+## Requirements
+
+Both platforms:
+
+- **OpenRGB** with the SDK Server running (OpenRGB, SDK Server tab, Start Server).
+
+Running from source:
+
+- **Python 3.9+** on Linux, **3.10+** to build the Windows package.
+- The Python packages in `requirements.txt`.
+
+Linux only:
+
+- `xprop` on X11 (standard X11 utilities) or `kdotool` on KDE Plasma Wayland, for
+  automatic game detection.
+- Your user in the `input` group, for key functions, type lighting, and key states.
+
+The Windows portable build bundles everything except OpenRGB itself.
+
 ## Usage
 
 Edit lighting:
 
 ```bash
-python3 modeshift_editor.py
+python3 modeshift_editor.py       # ModeShift.exe on Windows
 ```
 
 Run the daemon:
 
 ```bash
-python3 modeshift_watcher.py
+python3 modeshift_watcher.py      # ModeShiftWatcher.exe on Windows
 ```
 
-A tray icon appears. Right-click to pause, choose Auto (detect game), force a
-specific profile, reset key states, reload after editing, or quit.
+A tray icon appears, showing the active profile's color on one half of the mark.
+Right-click to pause, choose Auto (detect game), force a specific profile, open
+the editor, reset key states, reload after editing, or quit.
 
 List your keyboard's exact key names:
 
@@ -168,10 +225,10 @@ python3 modeshift_watcher.py --list-leds
 ```
 
 To start the watcher automatically at login, tick **Start the watcher when I log
-in** in the editor's Settings tab.
+in** in the editor's Settings tab. On Linux that writes a desktop autostart
+entry; on Windows it writes a single registry Run value. Unticking removes it.
 
-To also add both apps to your application menu (and set autostart from the
-terminal instead), run:
+On Linux, to also add both apps to your application menu, run:
 
 ```bash
 ./install_desktop.sh
@@ -190,25 +247,30 @@ Everything is drawn bottom up:
 So a Key State color always covers whatever that key was set to in Color Zones.
 That is deliberate: an ability's status should always be readable.
 
-## Linux desktop support
+## Desktop and platform support
 
-Everything except automatic game detection is desktop-agnostic: the editor, manual
-profile switching from the tray, modes, zones, effects, key functions, and key
-states all work regardless of your compositor.
+Everything except automatic game detection is platform-agnostic: the editor,
+manual profile switching from the tray, modes, zones, effects, key functions, and
+key states all work everywhere ModeShift runs.
 
 For automatic "focused window" detection, ModeShift picks a backend at runtime:
 
 | Session | Tool used | Notes |
 | --- | --- | --- |
+| Windows | `user32` | Built into the OS, nothing to install |
 | X11 (any desktop) | `xprop` | Ships with the standard X11 utilities |
 | KDE Plasma Wayland | `kdotool` | Install from the AUR or your distro |
 | Other Wayland (GNOME, sway, ...) | `xprop` fallback | Works for XWayland windows; native Wayland windows are not yet detected |
 
-X11 detection is newly added and has not yet been confirmed on a real X11 session.
-If you run X11, `python3 modeshift_watcher.py --detect-test` will show whether it
-works, and a report either way is welcome.
+Windows window classes are often generic (`UnrealWindow`, `Chrome_WidgetWin_1`),
+so on Windows ModeShift matches on the process name as well, and prefers it when
+the class is one of the known generic ones.
 
-If neither tool is installed, ModeShift tells you which package to get and
+X11 detection has still not been confirmed on a real X11 session. If you run X11,
+`python3 modeshift_watcher.py --detect-test` will show whether it works, and a
+report either way is welcome.
+
+If no detection tool is available, ModeShift tells you which package to get and
 everything else keeps working; you just pick profiles from the tray yourself.
 
 To check detection on a new desktop:
@@ -222,15 +284,19 @@ second as you switch windows.
 
 ## Configuration
 
-ModeShift stores its data next to the scripts:
+ModeShift stores its data beside the program: next to the scripts when run from a
+checkout, next to the `.exe` in the Windows portable build.
 
 - `modeshift.json` is your profiles, modes, zones, effects, functions, and key states.
 - `custom_colors.json` is your saved swatches.
 - `settings.json` is the editor and watcher settings.
 - `watcher_command.json` is a small file the editor uses to nudge the running watcher.
 
-All four are per-user and git-ignored, so your setup never gets committed. Use
+All of them are per-user and git-ignored, so your setup never gets committed. Use
 **Settings, Import / export profiles** to back up or share individual profiles.
+
+Moving between machines, or from a checkout to the packaged build, is a matter of
+copying those files across.
 
 ## A note on key states
 

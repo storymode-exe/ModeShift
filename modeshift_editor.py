@@ -762,8 +762,6 @@ class MainWindow(QMainWindow):
         # scrolls past that. Anything more and the whole panel needs a
         # scrollbar, which is worse.
         self.mode_list.setMinimumHeight(48)
-        row_h = self.mode_list.fontMetrics().height() + 6
-        self.mode_list.setMaximumHeight(row_h * MODE_LIST_ROWS + 8)
         self.mode_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
         self.mode_list.currentRowChanged.connect(self._on_mode_selected)
         self.mode_list.itemDoubleClicked.connect(lambda _i: self._on_rename_mode())
@@ -1089,8 +1087,10 @@ class MainWindow(QMainWindow):
         v.addWidget(QLabel(
             f"Version {APP_VERSION} &nbsp;·&nbsp; {APP_LICENSE}<br>"
             f"Created by <b>{APP_AUTHOR}</b><br><br>"
-            "Per-key RGB profiles, modes, zones, and key-triggered mode/profile "
-            "switching for any OpenRGB keyboard on Linux."
+            "Per-key RGB profiles, modes, zones, effects, and key-triggered "
+            "mode/profile switching for any OpenRGB keyboard.<br><br>"
+            "Runs on <b>Linux</b> and <b>Windows</b>. OpenRGB does the talking "
+            "to your hardware; ModeShift manages the lighting on top of it."
         ))
 
         kofi_btn = QPushButton("☕  Support on Ko-fi")
@@ -1962,6 +1962,7 @@ class MainWindow(QMainWindow):
             label = f"● {name}" if name == active else f"   {name}"
             self.mode_list.addItem(QListWidgetItem(label))
         self.mode_list.setCurrentRow(names.index(self.current_mode_name))
+        self._cap_mode_list_height()
         self._loading = False
         self._sync_active_mode_button()
         self._reload_zones()
@@ -1969,6 +1970,21 @@ class MainWindow(QMainWindow):
         # current mode list (fixes new modes not appearing until restart)
         if hasattr(self, "press_action"):
             self._load_func_editor()
+
+    def _cap_mode_list_height(self):
+        """Hold the modes list to MODE_LIST_ROWS rows, measuring a real row
+        rather than estimating one from the font: the estimate ran a couple of
+        pixels tall, which let an eleventh row through and pushed the whole
+        left panel into a scrollbar."""
+        try:
+            row_h = (self.mode_list.sizeHintForRow(0) if self.mode_list.count()
+                     else self.mode_list.fontMetrics().height() + 4)
+            if row_h <= 0:
+                return
+            frame = 2 * self.mode_list.frameWidth()
+            self.mode_list.setMaximumHeight(row_h * MODE_LIST_ROWS + frame)
+        except Exception:
+            pass
 
     def _sync_active_mode_button(self):
         if not hasattr(self, "set_active_btn"):
