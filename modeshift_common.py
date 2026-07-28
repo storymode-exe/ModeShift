@@ -538,6 +538,75 @@ def stop_running_watcher(path: Path = None) -> bool:
     return True
 
 
+_WATCHER_EXE_NAMES = ("modeshiftwatcher", "modeshiftwatcher.exe")
+_WATCHER_SCRIPTS = ("modeshift_watcher.py", "modeshift_watcher.py")
+
+
+def _basename(path_str: str) -> str:
+    """Last path component, treating both separators. Path() alone would leave
+    'C:\\dir\\file.exe' intact on Linux, which matters when the two platforms'
+    process lists are compared in tests."""
+    return re.split(r"[\\/]", path_str or "")[-1].lower()
+
+
+def _is_watcher_process(proc) -> bool:
+    """True only for an actual running watcher.
+
+    Deliberately strict. A loose substring test over the whole command line
+    also matches a shell, a grep or an editor that merely mentions the file
+    name, and stop_all_watchers() would then terminate those too."""
+    try:
+        name = (proc.info.get("name") or "").lower()
+        if name in _WATCHER_EXE_NAMES:
+            return True
+        if _basename(proc.info.get("exe") or "") in _WATCHER_EXE_NAMES:
+            return True
+        cmdline = proc.info.get("cmdline") or []
+        if not cmdline:
+            return False
+        # a checkout: the interpreter running the watcher script, where the
+        # script must be an argument in its own right, not a mention inside one
+        launcher = _basename(cmdline[0])
+        if not (launcher.startswith("python") or launcher in _WATCHER_EXE_NAMES):
+            return False
+        return any(_basename(arg) in _WATCHER_SCRIPTS for arg in cmdline[1:])
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError, OSError):
+        return False
+
+
+def watcher_processes(exclude_pid: int = None) -> list:
+    """Every running ModeShift watcher, found by process rather than by the
+    PID file.
+
+    The PID file only ever names the most recent watcher, so if one is ever
+    started twice (autostart plus a manual start, say) the older instances
+    become invisible to it and pile up in the tray. This finds all of them."""
+    mine = {os.getpid()}
+    if exclude_pid:
+        mine.add(exclude_pid)
+    return [proc for proc in psutil.process_iter(["pid", "name", "cmdline", "exe"])
+            if proc.info["pid"] not in mine and _is_watcher_process(proc)]
+
+
+def stop_all_watchers(exclude_pid: int = None, timeout: float = 5.0) -> int:
+    """Terminate every running watcher. Returns how many were asked to stop."""
+    procs = watcher_processes(exclude_pid)
+    for proc in procs:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    _, alive = psutil.wait_procs(procs, timeout=timeout)
+    for proc in alive:
+        try:
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if procs:
+        clear_watcher_pid()
+    return len(procs)
+
+
 WATCHER_CMD_PAUSE = "__pause__"
 WATCHER_CMD_RESUME = "__resume__"
 

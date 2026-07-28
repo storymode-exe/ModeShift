@@ -316,13 +316,25 @@ class Watcher:
                     if self._manual != AUTO:
                         self.apply_profile(self._manual)
                     else:
-                        result = rc.get_active_window()
+                        try:
+                            result = rc.get_active_window()
+                        except RuntimeError:
+                            # no detection tool installed: still light the board
+                            result = None
                         if result is not None:
                             win_class, pid = result
                             name = rc.resolve_profile_name(
                                 win_class, pid, self._profiles(),
                                 self.config.get("default_profile"))
-                            self.apply_profile(name)
+                        else:
+                            # Nothing readable. Straight after login there is
+                            # often no focused window yet, and doing nothing
+                            # here left the board on its firmware lighting
+                            # until you touched the tray. Light the default
+                            # profile instead.
+                            name = rc.fallback_profile_name(
+                                self._profiles(), self.config.get("default_profile"))
+                        self.apply_profile(name)
                 except Exception as e:
                     print(f"[modeshift_watcher] error in poll loop: {e}", file=sys.stderr)
             time.sleep(self.config["poll_interval_seconds"])
@@ -681,6 +693,15 @@ def main():
     if watcher is None:
         print(f"[modeshift_watcher] startup failed: {last_err}", file=sys.stderr)
         sys.exit(1)
+
+    # only ever one watcher: two of them fight over the keyboard and clutter
+    # the tray. Anything already running gets stopped before we take over,
+    # which also covers the case where autostart and a manual start collide.
+    stopped = rc.stop_all_watchers(exclude_pid=os.getpid())
+    if stopped:
+        print(f"[modeshift] stopped {stopped} watcher(s) already running",
+              file=sys.stderr)
+        time.sleep(0.3)
 
     # record our PID so the editor's Start/Restart button can stop exactly
     # this process, on any platform

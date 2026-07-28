@@ -57,7 +57,7 @@ import modeshift_common as rc
 import modeshift_effects as fx
 
 APP_NAME = "ModeShift"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"
@@ -714,14 +714,21 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(slot)
             pbtns.addWidget(b)
-        # the default-profile toggle rides along in this row rather than taking
-        # a row of its own, which would push the panel into a scrollbar
-        # U+FE0E forces the plain text star rather than a colour emoji
-        self.default_btn = QPushButton("★︎")
-        self.default_btn.setFixedWidth(34)
-        self.default_btn.clicked.connect(self._on_set_default_profile)
-        pbtns.addWidget(self.default_btn)
         v.addLayout(pbtns)
+
+        # Second row rather than a fifth button above: the panel is a fixed
+        # 240px and squeezing five in would clip their labels.
+        pbtns2 = QHBoxLayout()
+        dup_profile = QPushButton("Duplicate")
+        dup_profile.setToolTip("Copy this profile with all its modes, zones, "
+                               "functions and key states.")
+        dup_profile.clicked.connect(self._on_duplicate_profile)
+        pbtns2.addWidget(dup_profile)
+        # U+FE0E forces the plain text star rather than a colour emoji
+        self.default_btn = QPushButton("★︎ Default")
+        self.default_btn.clicked.connect(self._on_set_default_profile)
+        pbtns2.addWidget(self.default_btn)
+        v.addLayout(pbtns2)
 
         v.addWidget(QLabel("Match string (window / process):"))
         self.match_field = QLineEdit()
@@ -739,7 +746,9 @@ class MainWindow(QMainWindow):
 
         v.addWidget(QLabel("<b>Modes</b>"))
         self.mode_list = QListWidget()
-        self.mode_list.setMinimumHeight(64)
+        # kept short: the profile and mode blocks each carry a second button
+        # row now, and the panel must not grow the window
+        self.mode_list.setMinimumHeight(48)
         self.mode_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
         self.mode_list.currentRowChanged.connect(self._on_mode_selected)
         self.mode_list.itemDoubleClicked.connect(lambda _i: self._on_rename_mode())
@@ -751,13 +760,18 @@ class MainWindow(QMainWindow):
             b = QPushButton(label)
             b.clicked.connect(slot)
             mbtns.addWidget(b)
-        # matches the profile row: the marker button rides along instead of
-        # taking a row of its own
-        self.set_active_btn = QPushButton("●︎")
-        self.set_active_btn.setFixedWidth(34)
-        self.set_active_btn.clicked.connect(self._on_set_active_mode)
-        mbtns.addWidget(self.set_active_btn)
         v.addLayout(mbtns)
+
+        mbtns2 = QHBoxLayout()          # matches the profile block above
+        dup_mode = QPushButton("Duplicate")
+        dup_mode.setToolTip("Copy this mode with all its zones, effects and "
+                            "key states.")
+        dup_mode.clicked.connect(self._on_duplicate_mode)
+        mbtns2.addWidget(dup_mode)
+        self.set_active_btn = QPushButton("●︎ Active")
+        self.set_active_btn.clicked.connect(self._on_set_active_mode)
+        mbtns2.addWidget(self.set_active_btn)
+        v.addLayout(mbtns2)
 
         v.addWidget(self._hline())
         self.live_check = QCheckBox("Live preview on keyboard")
@@ -2071,15 +2085,56 @@ class MainWindow(QMainWindow):
         self._reload_all()
         self._status(f"Renamed profile to '{new}' (unsaved).")
 
+    def _on_duplicate_profile(self):
+        """Copy the current profile, modes, zones, functions and key states
+        included. Handy for a game that wants a variation on an existing set."""
+        src = self.current_profile_name
+        profiles = self._all_profiles()
+        suggestion = f"{src} copy"
+        n = 2
+        while suggestion in profiles:
+            suggestion = f"{src} copy {n}"
+            n += 1
+        name, ok = QInputDialog.getText(self, "Duplicate Profile",
+                                        "Name for the copy:", text=suggestion)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in profiles:
+            QMessageBox.warning(self, "Exists", f"Profile '{name}' already exists.")
+            return
+        copied = copy.deepcopy(profiles[src])
+        # two profiles matching the same window would be ambiguous, so the copy
+        # starts with no match string and is picked manually until you set one
+        copied["match"] = ""
+        profiles[name] = copied
+        self.current_profile_name = name
+        self.current_mode_name = copied.get("active_mode", rc.DEFAULT_MODE_NAME)
+        self._reload_all()
+        self._status(f"Duplicated '{src}' as '{name}'. Set its match string "
+                     f"to have it detected automatically. (unsaved)")
+
     def _on_delete_profile(self):
-        if self.current_profile_name == rc.DEFAULT_PROFILE_NAME:
-            QMessageBox.warning(self, "Can't delete", "The Default profile can't be deleted.")
-            return
         name = self.current_profile_name
-        if QMessageBox.question(self, "Delete", f"Delete profile '{name}'?") != QMessageBox.Yes:
+        profiles = self._all_profiles()
+        last_one = len(profiles) <= 1
+        question = (f"Delete profile '{name}'?\n\nIt is the only profile left, "
+                    f"so a new empty Default will take its place."
+                    if last_one else f"Delete profile '{name}'?")
+        if QMessageBox.question(self, "Delete", question) != QMessageBox.Yes:
             return
-        del self._all_profiles()[name]
-        self.current_profile_name = rc.DEFAULT_PROFILE_NAME
+        del profiles[name]
+        if not profiles:
+            # the editor and the watcher both need somewhere to fall back to,
+            # so wiping everything leaves a blank Default rather than nothing
+            profiles[rc.DEFAULT_PROFILE_NAME] = {
+                "match": "", "active_mode": rc.DEFAULT_MODE_NAME,
+                "modes": {rc.DEFAULT_MODE_NAME: {"base_color": "000000", "zones": []}},
+            }
+        if self.cfg.get("default_profile") == name:
+            self.cfg["default_profile"] = None      # the star went with it
+        self.current_profile_name = rc.fallback_profile_name(
+            profiles, self.cfg.get("default_profile"))
         self.current_mode_name = self._profile()["active_mode"]
         self._reload_all()
         self._status(f"Deleted profile '{name}' (unsaved).")
@@ -2293,6 +2348,28 @@ class MainWindow(QMainWindow):
         self.current_mode_name = new
         self._reload_modes()
         self._status(f"Renamed mode to '{new}' (unsaved).")
+
+    def _on_duplicate_mode(self):
+        """Copy the current mode, zones, effects and key states included."""
+        modes = self._profile()["modes"]
+        src = self.current_mode_name
+        suggestion = f"{src} copy"
+        n = 2
+        while suggestion in modes:
+            suggestion = f"{src} copy {n}"
+            n += 1
+        name, ok = QInputDialog.getText(self, "Duplicate Mode",
+                                        "Name for the copy:", text=suggestion)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in modes:
+            QMessageBox.warning(self, "Exists", f"Mode '{name}' already exists.")
+            return
+        modes[name] = copy.deepcopy(modes[src])
+        self.current_mode_name = name
+        self._reload_modes()
+        self._status(f"Duplicated mode '{src}' as '{name}' (unsaved).")
 
     def _on_delete_mode(self):
         modes = self._profile()["modes"]
@@ -3208,11 +3285,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save failed", f"Couldn't save before restart:\n{e}")
             return
         try:
-            rc.stop_running_watcher()      # by PID, so it works on any platform
-            if not IS_WINDOWS and not rc.IS_FROZEN:
-                # also catch watchers started before PID files existed
-                subprocess.run(["pkill", "-f", WATCHER_SCRIPT.name],
-                               capture_output=True)
+            # every watcher, not just the one in the PID file: that only ever
+            # names the most recent, so any earlier instance used to survive a
+            # restart and pile up a second tray icon
+            rc.stop_all_watchers()
             time.sleep(0.4)
 
             log_path = Path(tempfile.gettempdir()) / "modeshift_watcher.log"
