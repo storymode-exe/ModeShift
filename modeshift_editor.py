@@ -129,7 +129,17 @@ DEFAULT_SETTINGS = {
     "finale_flash": True,
     "keyboard_scale": 100,
     "saved_color_slots": 24,
+    # last window geometry, so the editor reopens the size you left it at
+    # rather than snapping back to its minimum every time
+    "window_size": None,          # [width, height]
+    "window_pos": None,           # [x, y]
+    "window_maximized": False,
 }
+
+# How many modes the list shows before it scrolls. The left panel is the only
+# thing that can push the window taller, and this list is the only part of it
+# that grows, so it gets a hard cap.
+MODE_LIST_ROWS = 9
 CUSTOM_ROW = 8            # swatches per row
 CUSTOM_MAX = 64           # hard cap on saved custom colors
 
@@ -746,9 +756,14 @@ class MainWindow(QMainWindow):
 
         v.addWidget(QLabel("<b>Modes</b>"))
         self.mode_list = QListWidget()
-        # kept short: the profile and mode blocks each carry a second button
-        # row now, and the panel must not grow the window
+        # Kept short deliberately. The profile and mode blocks each carry a
+        # second button row now, and this list is the one thing in the panel
+        # that grows without limit, so it is capped at MODE_LIST_ROWS rows and
+        # scrolls past that. Anything more and the whole panel needs a
+        # scrollbar, which is worse.
         self.mode_list.setMinimumHeight(48)
+        row_h = self.mode_list.fontMetrics().height() + 6
+        self.mode_list.setMaximumHeight(row_h * MODE_LIST_ROWS + 8)
         self.mode_list.setSizeAdjustPolicy(QListWidget.AdjustIgnored)
         self.mode_list.currentRowChanged.connect(self._on_mode_selected)
         self.mode_list.itemDoubleClicked.connect(lambda _i: self._on_rename_mode())
@@ -3245,6 +3260,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         try:
+            self._remember_geometry()
+        except Exception:
+            pass
+        try:
             self._preview.stop()
         except Exception:
             pass
@@ -3253,6 +3272,53 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(e)
+
+    def _remember_geometry(self):
+        """Record the window's size and position so the next launch reopens
+        the way you left it. Skipped while maximised or minimised, where the
+        geometry is not what you would want restored."""
+        if self.isMaximized() or self.isMinimized():
+            self.settings["window_maximized"] = self.isMaximized()
+            self._save_settings()
+            return
+        self.settings["window_maximized"] = False
+        self.settings["window_size"] = [self.width(), self.height()]
+        self.settings["window_pos"] = [self.x(), self.y()]
+        self._save_settings()
+
+    def restore_geometry(self, default_w: int, default_h: int):
+        """Open at the remembered size, clamped so a saved geometry from a
+        larger monitor cannot put the window off screen. Falls back to the
+        keyboard-derived size on first run."""
+        size = self.settings.get("window_size")
+        pos = self.settings.get("window_pos")
+        w, h = default_w, default_h
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            try:
+                w = max(default_w, int(size[0]))
+                h = max(default_h, int(size[1]))
+            except (TypeError, ValueError):
+                w, h = default_w, default_h
+        try:
+            screen = QApplication.primaryScreen().availableGeometry()
+            w = min(w, screen.width())
+            h = min(h, screen.height())
+        except Exception:
+            screen = None
+        self.resize(w, h)
+        if isinstance(pos, (list, tuple)) and len(pos) == 2:
+            try:
+                x, y = int(pos[0]), int(pos[1])
+            except (TypeError, ValueError):
+                x = y = None
+            if x is not None and screen is not None:
+                # keep at least a sliver on screen, so a window saved on a
+                # monitor that is no longer attached is still reachable
+                x = min(max(x, screen.x() - w + 120), screen.x() + screen.width() - 120)
+                y = min(max(y, screen.y()), screen.y() + screen.height() - 80)
+                self.move(x, y)
+        if self.settings.get("window_maximized"):
+            self.showMaximized()
 
     def _on_apply_now(self):
         """Push to the keyboard now AND sync a running watcher: save the config
@@ -3356,10 +3422,10 @@ def main():
         QMessageBox.critical(None, "Startup error", str(e))
         sys.exit(1)
     w, h = win.sized_for_keyboard()
-    # hard stop: never let the window shrink past the keyboard, and open at
-    # exactly that minimum rather than something taller
+    # hard stop: never let the window shrink past the keyboard. Above that
+    # floor the window reopens at whatever size you last left it.
     win.setMinimumSize(w, h)
-    win.resize(w, h)
+    win.restore_geometry(w, h)
     win.show()
     sys.exit(app.exec())
 
