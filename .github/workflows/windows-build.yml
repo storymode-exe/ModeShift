@@ -1,0 +1,68 @@
+# Builds the portable Windows package on GitHub's own Windows runners, so
+# cutting a release no longer needs a Windows machine.
+#
+# Push a tag like v1.6.0 and this runs. It attaches
+# ModeShift-windows-portable.zip to the matching release, creating that release
+# as a DRAFT if it does not exist yet, so your own release notes are never
+# overwritten by generated ones.
+#
+# It can also be run by hand from the Actions tab, which just leaves the zip as
+# a downloadable artifact on the run.
+
+name: Windows build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller openrgb-python psutil pystray pillow pynput PySide6
+
+      - name: Build
+        run: python -m PyInstaller --clean --noconfirm packaging/modeshift.spec
+
+      - name: Zip it
+        run: Compress-Archive -Path dist/ModeShift/* -DestinationPath dist/ModeShift-windows-portable.zip -Force
+
+      - name: Keep the zip on this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ModeShift-windows-portable
+          path: dist/ModeShift-windows-portable.zip
+          if-no-files-found: error
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # If there is no release for this tag yet, make a draft so the zip has
+          # somewhere to live. Drafts are not visible until you publish them, and
+          # whatever notes you write by hand stay yours.
+          gh release view "$env:TAG" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:TAG" --draft --title "ModeShift $env:TAG" `
+              --notes "Draft created by CI. Paste the release notes here before publishing."
+          }
+          gh release upload "$env:TAG" dist/ModeShift-windows-portable.zip --clobber
