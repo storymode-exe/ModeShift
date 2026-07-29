@@ -972,8 +972,30 @@ def current_mode_name(device) -> str:
         return ""
 
 
+def direct_mode_state(device):
+    """Is the device in Direct mode? True, False, or None for 'cannot tell'.
+
+    Not every controller reports an active mode. The Keychron Ultra plugin, for
+    one, leaves active_mode empty while exposing Direct as the only mode it has.
+    Treating that as 'not Direct' means re-sending set_mode forever; treating it
+    as 'Direct' would miss a board that really has drifted. So it is a third
+    answer, and the caller decides what to do with not knowing."""
+    name = current_mode_name(device)
+    if name:
+        return name == "direct"
+    try:
+        modes = [(getattr(m, "name", "") or "").lower()
+                 for m in getattr(device, "modes", [])]
+    except Exception:
+        modes = []
+    if modes and all(m == "direct" for m in modes):
+        return True             # Direct is the only mode it has
+    return None                 # OpenRGB is not telling us
+
+
 def is_direct(device) -> bool:
-    return current_mode_name(device) == "direct"
+    """True only when we can confirm it. Unknown counts as not confirmed."""
+    return direct_mode_state(device) is True
 
 
 def ensure_direct_mode(device) -> bool:

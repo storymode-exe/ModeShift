@@ -6,12 +6,12 @@ All notable changes to ModeShift are documented here.
 
 ### Fixed
 - **The keyboard could stay on its own firmware lighting even when the watcher
-  had connected to the right device.** Direct mode, which is what makes per-LED
-  colours apply at all, was only set once when connecting. A board still coming
-  up at boot can drop back into a firmware mode afterwards, and from then on
-  every frame ModeShift sent was silently ignored. The watcher now re-checks
-  Direct mode along with the device and restores it, so the board cannot sit
-  there ignoring you for a whole session.
+  had connected to the right device.** Direct mode is what makes per-LED colours
+  apply at all, and it was only set once, on connect. At login a board is often
+  not ready to accept it yet: the call succeeds, the keyboard keeps its own
+  lighting, and every frame ModeShift sends afterwards is ignored for the rest
+  of the session. Direct mode is now re-asserted for the first minute after
+  connecting, and after that whenever the device reports it has drifted.
 - **The keyboard could sit on its firmware lighting for a whole session**, most
   often after login, with the watcher running and apparently healthy. An OpenRGB
   device handle is only an index into its device list, and OpenRGB rebuilds that

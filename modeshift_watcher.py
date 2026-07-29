@@ -75,6 +75,7 @@ class Watcher:
         self._icon_title = "ModeShift"
         self._preview = None               # (profile, mode) sent by the editor
         self._last_device_check = 0.0      # see _ensure_device_current()
+        self._connected_at = 0.0           # when we last (re)connected
         # Seed with the current command-file contents so a stale command from a
         # previous session doesn't fire on startup. We never start paused: the
         # editor previews through us now rather than pausing us, so a leftover
@@ -176,6 +177,10 @@ class Watcher:
     # How often to check that OpenRGB still reports our keyboard where we last
     # saw it. Cheap: one round trip, and only every few seconds.
     DEVICE_CHECK_SECONDS = 10.0
+    # How long after connecting to keep re-asserting Direct mode. Covers a
+    # board that is not ready to accept it at login without pestering it for
+    # the rest of the session.
+    DIRECT_REASSERT_SECONDS = 60.0
 
     def _connect(self):
         if self._reactive is not None:
@@ -190,6 +195,7 @@ class Watcher:
         self.led_lookup = rc.build_led_lookup(self.device)
         self._reactive = fx.EffectEngine(self.device, self.led_lookup)
         self._last_device_check = time.monotonic()
+        self._connected_at = time.monotonic()
 
         configured = self.config.get("active_device")
         if configured and configured != self.device_name:
@@ -230,15 +236,27 @@ class Watcher:
             self._reconnect(f"the configured keyboard {preferred!r} is available now")
             return
 
-        # Direct mode is what makes per-LED colours apply at all. Setting it
-        # once on connect is not enough: a board still initialising at boot, or
-        # anything else that talks to OpenRGB, can put it back into a firmware
-        # mode, and from then on every frame we send is silently ignored while
-        # the keyboard shows its own lighting.
-        if not rc.is_direct(self.device):
+        # Direct mode is what makes per-LED colours apply at all, and setting it
+        # once on connect is not enough. At login the board is often not ready
+        # to accept it yet: the call succeeds, the keyboard keeps its firmware
+        # lighting, and every frame we send afterwards is ignored.
+        #
+        # So re-assert it for the first minute after connecting, which covers a
+        # board still waking up, and after that only when we can actually see
+        # that it has drifted. Some controllers never report their active mode
+        # (the Keychron Ultra plugin is one), and re-sending set_mode forever on
+        # the strength of a value that is simply absent is just noise.
+        # During the settling window we re-assert regardless of what the device
+        # claims. At login it reported Direct as its only mode, so by every
+        # reading it was already there, while the board sat on its firmware
+        # lighting until a second set_mode a few seconds later got through.
+        state = rc.direct_mode_state(self.device)
+        settling = (now - self._connected_at) < self.DIRECT_REASSERT_SECONDS
+        if state is False or settling:
             if rc.ensure_direct_mode(self.device):
-                print("[modeshift] the keyboard had left Direct mode, put it back",
-                      file=sys.stderr)
+                if state is False:
+                    print("[modeshift] the keyboard had left Direct mode, put it back",
+                          file=sys.stderr)
                 self._last_applied = "__unset__"     # repaint immediately
                 if self._reactive is not None:
                     self._reactive.mark_dirty()
