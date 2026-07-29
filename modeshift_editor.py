@@ -57,7 +57,7 @@ import modeshift_common as rc
 import modeshift_effects as fx
 
 APP_NAME = "ModeShift"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 APP_AUTHOR = "StoryMode"
 APP_LICENSE = "GPLv3"
 KOFI_URL = "https://ko-fi.com/storymode"

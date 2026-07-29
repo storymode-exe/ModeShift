@@ -74,6 +74,7 @@ class Watcher:
         self._icon_color = "2F00FF"        # last mode colour, for icon redraws
         self._icon_title = "ModeShift"
         self._preview = None               # (profile, mode) sent by the editor
+        self._last_device_check = 0.0      # see _ensure_device_current()
         # Seed with the current command-file contents so a stale command from a
         # previous session doesn't fire on startup. We never start paused: the
         # editor previews through us now rather than pausing us, so a leftover
@@ -172,13 +173,73 @@ class Watcher:
             self.set_manual(profile)
         print(f"[modeshift] editor command: switch to {profile!r}", file=sys.stderr)
 
+    # How often to check that OpenRGB still reports our keyboard where we last
+    # saw it. Cheap: one round trip, and only every few seconds.
+    DEVICE_CHECK_SECONDS = 10.0
+
     def _connect(self):
         if self._reactive is not None:
             self._reactive.stop()
+        if self.client is not None:
+            try:
+                self.client.disconnect()      # don't leak the old socket
+            except Exception:
+                pass
         self.client = rc.open_client(self.config, client_name="game-watcher")
         self.device, self.device_name = rc.select_device(self.config, self.client)
         self.led_lookup = rc.build_led_lookup(self.device)
         self._reactive = fx.EffectEngine(self.device, self.led_lookup)
+        self._last_device_check = time.monotonic()
+
+        configured = self.config.get("active_device")
+        if configured and configured != self.device_name:
+            # Worth saying out loud: profiles are stored per device name, so
+            # landing on a different one silently gives you a different (often
+            # nearly empty) set of profiles.
+            print(f"[modeshift] note: config asks for {configured!r} but OpenRGB "
+                  f"is offering {self.device_name!r}; using that instead",
+                  file=sys.stderr)
+
+    def _ensure_device_current(self):
+        """Re-check that our device handle still points at our keyboard.
+
+        OpenRGB rebuilds its device list whenever the device count changes, and
+        our handle is only an index into it. Left unchecked, a watcher started
+        before detection finished spends the rest of the session writing to the
+        wrong slot, which looks exactly like the keyboard being stuck on its
+        firmware lighting."""
+        now = time.monotonic()
+        if now - self._last_device_check < self.DEVICE_CHECK_SECONDS:
+            return
+        self._last_device_check = now
+
+        try:
+            self.client.update()
+        except Exception as e:
+            self._reconnect(f"lost the OpenRGB connection ({e})")
+            return
+
+        if not rc.device_still_valid(self.client, self.device):
+            self._reconnect("OpenRGB re-enumerated its devices")
+            return
+
+        # The keyboard the config actually asks for may only have turned up
+        # after we connected, under a name we could not match at startup.
+        preferred = rc.preferred_device_present(self.client, self.config)
+        if preferred and preferred != self.device_name:
+            self._reconnect(f"the configured keyboard {preferred!r} is available now")
+
+    def _reconnect(self, why: str):
+        print(f"[modeshift] reconnecting: {why}", file=sys.stderr)
+        try:
+            self._connect()
+        except Exception as e:
+            print(f"[modeshift] reconnect failed, will retry: {e}", file=sys.stderr)
+            return
+        self._last_applied = "__unset__"     # force a repaint on the next tick
+        self._mode_override = None
+        self.refresh_menu()                  # the profile set may have changed
+        print(f"[modeshift] now driving {self.device_name!r}", file=sys.stderr)
 
     def _profiles(self) -> dict:
         """Profiles for the auto-detected active keyboard."""
@@ -313,6 +374,9 @@ class Watcher:
                 print(f"[modeshift] command check failed: {e}", file=sys.stderr)
             if not self._paused.is_set():
                 try:
+                    # make sure we are still talking to the right keyboard
+                    # before painting anything onto it
+                    self._ensure_device_current()
                     if self._manual != AUTO:
                         self.apply_profile(self._manual)
                     else:

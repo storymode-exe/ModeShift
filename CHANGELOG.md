@@ -2,6 +2,23 @@
 
 All notable changes to ModeShift are documented here.
 
+## v1.5.1
+
+### Fixed
+- **The keyboard could sit on its firmware lighting for a whole session**, most
+  often after login, with the watcher running and apparently healthy. An OpenRGB
+  device handle is only an index into its device list, and OpenRGB rebuilds that
+  list whenever the device count changes, which it does while hardware is still
+  being detected at boot. A watcher that connected during that window spent the
+  rest of the session writing colours to whatever later occupied that slot. The
+  watcher now re-checks its device every few seconds, reconnects when the list
+  moves, and moves back onto the keyboard named in your config if that keyboard
+  only turns up after startup.
+- Profiles could appear to vanish: profiles are stored per keyboard name, and
+  landing on a different name gave you that name's (often nearly empty) set with
+  nothing said about it. The watcher now logs when the keyboard it connected to
+  is not the one the config asks for.
+
 ## v1.5.0
 
 ### Added

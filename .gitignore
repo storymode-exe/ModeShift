@@ -30,3 +30,4 @@ modeshift.json
 watcher.pid
 build/
 dist/
+modeshift.json.backup-*

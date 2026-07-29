@@ -928,6 +928,39 @@ def select_device(cfg: dict, client, preferred: str = None):
     return device, name
 
 
+def device_still_valid(client, device) -> bool:
+    """True if OpenRGB still reports our device where we last saw it.
+
+    A Device object is only an index into the client's device list. OpenRGB
+    rebuilds that list from scratch whenever the number of devices changes,
+    which happens when hardware turns up late or a plugin loads after we
+    connected. The handle we are holding then addresses whatever now occupies
+    that slot, so colours go to the wrong device, or nowhere at all, and the
+    keyboard falls back to its firmware lighting with nothing logged."""
+    try:
+        idx = getattr(device, "id", None)
+        if idx is None or idx < 0 or idx >= len(client.devices):
+            return False
+        current = client.devices[idx]
+        return current is not None and current.name == device.name
+    except Exception:
+        return False
+
+
+def preferred_device_present(client, cfg: dict) -> str | None:
+    """The name of the keyboard the config asks for, if OpenRGB is reporting it
+    now. Used to move back onto the right board when it turns up late: at login
+    the same keyboard can be reported under a different name (or not at all)
+    before detection has settled."""
+    want = (cfg.get("active_device") or "").strip().lower()
+    if not want:
+        return None
+    for d in list_keyboards(client):
+        if want in d.name.lower():
+            return d.name
+    return None
+
+
 def ensure_direct_mode(device) -> bool:
     """Put the device into Direct mode so live per-LED colours actually apply.
 
