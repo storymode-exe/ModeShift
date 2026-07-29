@@ -115,6 +115,14 @@ class EffectEngine:
                 active={})
         return layer
 
+    def mark_dirty(self):
+        """Force one repaint on the next frame, even for static content.
+
+        Used when something outside the engine has invalidated the keyboard's
+        state, such as the board dropping out of Direct mode and back."""
+        with self._lock:
+            self._base_dirty = True
+
     def configure(self, base_colors, mode: dict):
         with self._lock:
             self._base = list(base_colors)

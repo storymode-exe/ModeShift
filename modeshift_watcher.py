@@ -228,6 +228,20 @@ class Watcher:
         preferred = rc.preferred_device_present(self.client, self.config)
         if preferred and preferred != self.device_name:
             self._reconnect(f"the configured keyboard {preferred!r} is available now")
+            return
+
+        # Direct mode is what makes per-LED colours apply at all. Setting it
+        # once on connect is not enough: a board still initialising at boot, or
+        # anything else that talks to OpenRGB, can put it back into a firmware
+        # mode, and from then on every frame we send is silently ignored while
+        # the keyboard shows its own lighting.
+        if not rc.is_direct(self.device):
+            if rc.ensure_direct_mode(self.device):
+                print("[modeshift] the keyboard had left Direct mode, put it back",
+                      file=sys.stderr)
+                self._last_applied = "__unset__"     # repaint immediately
+                if self._reactive is not None:
+                    self._reactive.mark_dirty()
 
     def _reconnect(self, why: str):
         print(f"[modeshift] reconnecting: {why}", file=sys.stderr)

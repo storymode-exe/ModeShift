@@ -961,6 +961,21 @@ def preferred_device_present(client, cfg: dict) -> str | None:
     return None
 
 
+def current_mode_name(device) -> str:
+    """The device's active mode, lowercased, or '' if it can't be read.
+
+    Only meaningful straight after client.update(), since the value is cached
+    from the last time OpenRGB sent us this device's data."""
+    try:
+        return (getattr(getattr(device, "active_mode", None), "name", "") or "").lower()
+    except Exception:
+        return ""
+
+
+def is_direct(device) -> bool:
+    return current_mode_name(device) == "direct"
+
+
 def ensure_direct_mode(device) -> bool:
     """Put the device into Direct mode so live per-LED colours actually apply.
 
