@@ -896,7 +896,8 @@ def _profiles_for_new_device(cfg: dict, device) -> dict:
     return _empty_profiles()
 
 
-def select_device(cfg: dict, client, preferred: str = None):
+def select_device(cfg: dict, client, preferred: str = None,
+                  require_preferred: bool = False):
     """Auto-detect the keyboard to use. Prefers `preferred`, else the config's
     last active_device, else the first keyboard OpenRGB reports. Ensures the
     config has an entry for it (creating one via carry-over if it's new).
@@ -908,15 +909,30 @@ def select_device(cfg: dict, client, preferred: str = None):
             f"No per-key keyboard found in OpenRGB. Devices available: {available}"
         )
 
-    want = (preferred or cfg.get("active_device") or "").lower()
+    wanted_name = preferred or cfg.get("active_device") or ""
+    want = wanted_name.lower()
     device = None
     if want:
         for d in keyboards:
             if want in d.name.lower():
                 device = d
                 break
+
+    if device is None and want and require_preferred:
+        # At login OpenRGB reports devices as it finds them, and a graphics card
+        # or fan controller with a per-key matrix can turn up before the
+        # keyboard does. Grabbing one of those means a whole session spent
+        # lighting the wrong hardware, so while we are still willing to wait,
+        # say so and let the caller retry.
+        available = ", ".join(d.name for d in keyboards) or "(none yet)"
+        raise RuntimeError(
+            f"waiting for {wanted_name!r}; OpenRGB is only offering: {available}")
+
     if device is None:
-        device = keyboards[0]
+        # Prefer something OpenRGB actually calls a keyboard over anything that
+        # merely has a matrix, so a GPU is the last thing we would ever pick.
+        typed = [d for d in keyboards if is_keyboard(d)]
+        device = (typed or keyboards)[0]
 
     ensure_direct_mode(device)      # otherwise set_colors silently does nothing
 
@@ -924,7 +940,16 @@ def select_device(cfg: dict, client, preferred: str = None):
     cfg.setdefault("devices", {})
     if name not in cfg["devices"]:
         cfg["devices"][name] = {"profiles": _profiles_for_new_device(cfg, device)}
-    cfg["active_device"] = name
+
+    # Only record this as the device we want if it is the one we asked for, or
+    # if we had no preference. Overwriting the preference with a fallback loses
+    # the record of what the user actually chose, and with it any chance of
+    # moving back to the right board when it appears.
+    if not want or (want and want in name.lower()):
+        cfg["active_device"] = name
+    else:
+        print(f"[modeshift] wanted {wanted_name!r} but it is not available; "
+              f"using {name!r} for now", file=sys.stderr)
     return device, name
 
 

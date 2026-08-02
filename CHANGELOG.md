@@ -2,6 +2,40 @@
 
 All notable changes to ModeShift are documented here.
 
+## v1.5.2
+
+### Fixed
+- **The watcher could spend an entire session lighting the wrong device.** At
+  login OpenRGB reports hardware as it finds it, and a graphics card or fan
+  controller that exposes a per-key matrix can appear before the keyboard does.
+  Device selection would accept one of those, write your profiles onto it, and
+  record it as your chosen device, which also destroyed the record of which
+  keyboard you actually wanted. Everything downstream then worked perfectly on
+  the wrong hardware: no errors, no warnings, and a keyboard left on its own
+  firmware lighting. The watcher now waits for the keyboard named in your config
+  before settling for anything else, never overwrites your choice with a
+  fallback, and prefers a device OpenRGB calls a keyboard over anything that
+  merely has a matrix.
+- Every profile applied is now logged with its name, mode, colour and LED count,
+  and a watcher that has not painted anything within thirty seconds says so and
+  reports its state. Both of these existed only because the previous bug was
+  impossible to see from the outside.
+- **ModeShift could run all session without lighting the keyboard, saying
+  nothing.** The render loop sent a frame 60 times a second and threw away
+  every error it got back, so a connection that had stopped working looked
+  identical to one that was fine: the watcher was running, key functions
+  worked, the tray responded, and the board sat on its firmware lighting.
+  Failures are now reported once, counted rather than spammed, and after a
+  couple of seconds of frames not landing the watcher reconnects by itself.
+- If the render thread ever died, the engine never started another one, because
+  it only checked a flag rather than the thread. Every later attempt to apply a
+  profile quietly did nothing. It now checks whether the thread is actually
+  alive, and a crash in that thread is logged with its traceback instead of
+  disappearing.
+- The device health check added in v1.5.1 ran before the keyboard was painted
+  each cycle, so a slow check could delay lighting. It now runs afterwards and
+  cannot hold up the thing it is checking on.
+
 ## v1.5.1
 
 ### Fixed

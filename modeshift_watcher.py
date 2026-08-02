@@ -49,7 +49,7 @@ AUTO = "__auto__"  # follow game detection
 
 
 class Watcher:
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, require_preferred: bool = False):
         self.config_path = config_path
         try:
             self.config = rc.load_config(config_path)
@@ -76,12 +76,14 @@ class Watcher:
         self._preview = None               # (profile, mode) sent by the editor
         self._last_device_check = 0.0      # see _ensure_device_current()
         self._connected_at = 0.0           # when we last (re)connected
+        self._last_apply_at = 0.0          # last successful apply_profile
+        self._last_nag_at = 0.0            # rate limit for the idle warning
         # Seed with the current command-file contents so a stale command from a
         # previous session doesn't fire on startup. We never start paused: the
         # editor previews through us now rather than pausing us, so a leftover
         # pause in the file must not strand the keyboard.
         self._cmd_text = self._command_text()
-        self._connect()
+        self._connect(require_preferred=require_preferred)
 
     def refresh_menu(self):
         """Rebuild the tray menu so newly added or renamed profiles show up
@@ -181,8 +183,11 @@ class Watcher:
     # board that is not ready to accept it at login without pestering it for
     # the rest of the session.
     DIRECT_REASSERT_SECONDS = 60.0
+    # Consecutive failed frames before we stop trusting the connection. At 60fps
+    # this is a couple of seconds of a keyboard that is not responding.
+    PUSH_FAILURES_BEFORE_RECONNECT = 120
 
-    def _connect(self):
+    def _connect(self, require_preferred: bool = False):
         if self._reactive is not None:
             self._reactive.stop()
         if self.client is not None:
@@ -191,7 +196,8 @@ class Watcher:
             except Exception:
                 pass
         self.client = rc.open_client(self.config, client_name="game-watcher")
-        self.device, self.device_name = rc.select_device(self.config, self.client)
+        self.device, self.device_name = rc.select_device(
+            self.config, self.client, require_preferred=require_preferred)
         self.led_lookup = rc.build_led_lookup(self.device)
         self._reactive = fx.EffectEngine(self.device, self.led_lookup)
         self._last_device_check = time.monotonic()
@@ -215,6 +221,17 @@ class Watcher:
         wrong slot, which looks exactly like the keyboard being stuck on its
         firmware lighting."""
         now = time.monotonic()
+
+        # The engine paints on its own thread. If its frames have been bouncing
+        # for a while, the connection is no good regardless of what the checks
+        # below would say, so reconnect rather than keep failing quietly.
+        engine = self._reactive
+        if engine is not None and engine.push_failures >= self.PUSH_FAILURES_BEFORE_RECONNECT:
+            failures = engine.push_failures
+            engine.push_failures = 0
+            self._reconnect(f"{failures} frames in a row failed to reach the keyboard")
+            return
+
         if now - self._last_device_check < self.DEVICE_CHECK_SECONDS:
             return
         self._last_device_check = now
@@ -253,11 +270,14 @@ class Watcher:
         state = rc.direct_mode_state(self.device)
         settling = (now - self._connected_at) < self.DIRECT_REASSERT_SECONDS
         if state is False or settling:
-            if rc.ensure_direct_mode(self.device):
-                if state is False:
-                    print("[modeshift] the keyboard had left Direct mode, put it back",
-                          file=sys.stderr)
-                self._last_applied = "__unset__"     # repaint immediately
+            if rc.ensure_direct_mode(self.device) and state is False:
+                # Only a real drift is worth a full repaint. During the settling
+                # window the engine's own frame, due within a second, paints the
+                # board anyway, and forcing it here just makes the keyboard
+                # flash and the log repeat itself.
+                print("[modeshift] the keyboard had left Direct mode, put it back",
+                      file=sys.stderr)
+                self._last_applied = "__unset__"
                 if self._reactive is not None:
                     self._reactive.mark_dirty()
 
@@ -330,6 +350,11 @@ class Watcher:
             else:
                 self.device.set_colors(colors)
             self._last_applied = signature
+            self._last_apply_at = time.monotonic()
+            zones = len(mode.get("zones", []))
+            print(f"[modeshift] applied {name!r} / {mode_name!r} "
+                  f"(base #{mode.get('base_color')}, {zones} zone(s), "
+                  f"{len(colors)} LEDs)", file=sys.stderr)
             self._update_icon(mode, name, mode_name)
 
     def _update_icon(self, mode, profile_name, mode_name):
@@ -406,9 +431,6 @@ class Watcher:
                 print(f"[modeshift] command check failed: {e}", file=sys.stderr)
             if not self._paused.is_set():
                 try:
-                    # make sure we are still talking to the right keyboard
-                    # before painting anything onto it
-                    self._ensure_device_current()
                     if self._manual != AUTO:
                         self.apply_profile(self._manual)
                     else:
@@ -433,7 +455,41 @@ class Watcher:
                         self.apply_profile(name)
                 except Exception as e:
                     print(f"[modeshift_watcher] error in poll loop: {e}", file=sys.stderr)
+                # Health check runs after painting, never before it. A slow or
+                # stuck check must not be able to stop the keyboard being lit.
+                try:
+                    self._ensure_device_current()
+                except Exception as e:
+                    print(f"[modeshift] device check failed: {e}", file=sys.stderr)
+            self._warn_if_idle()
             time.sleep(self.config["poll_interval_seconds"])
+
+    # If nothing has been painted for a while, say so and say why. A watcher
+    # that is running but has never applied anything used to look identical to
+    # one that is working, which is how a keyboard sat on firmware lighting for
+    # a whole session without a word in the log.
+    IDLE_WARNING_SECONDS = 30.0
+
+    def _warn_if_idle(self):
+        now = time.monotonic()
+        if self._last_apply_at:
+            return                              # something has been applied
+        if now - self._connected_at < self.IDLE_WARNING_SECONDS:
+            return                              # give it a chance to settle
+        if now - self._last_nag_at < self.IDLE_WARNING_SECONDS:
+            return                              # do not repeat every tick
+        self._last_nag_at = now
+        engine = self._reactive
+        try:
+            profiles = list(self._profiles())
+        except Exception as e:
+            profiles = f"<unreadable: {e}>"
+        print(f"[modeshift] nothing has been applied to the keyboard yet. "
+              f"paused={self.is_paused()}, manual={self._manual!r}, "
+              f"device={self.device_name!r}, profiles={profiles}, "
+              f"engine_running={engine._running.is_set() if engine else None}, "
+              f"push_failures={engine.push_failures if engine else None}",
+              file=sys.stderr)
 
     def on_key(self, key_name: str, pressed: bool):
         """Single entry point for a physical key event, from whichever listener
@@ -779,7 +835,11 @@ def main():
     last_err = None
     for i in range(attempts):
         try:
-            watcher = Watcher(config_path)
+            # Until the last try, insist on the keyboard named in the config.
+            # Otherwise a device that merely has a per-key matrix, a graphics
+            # card for instance, can be picked while the keyboard is still
+            # enumerating, and the whole session lights the wrong hardware.
+            watcher = Watcher(config_path, require_preferred=(i < attempts - 1))
             break
         except Exception as e:
             last_err = e

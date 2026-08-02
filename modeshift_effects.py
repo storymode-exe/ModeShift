@@ -18,6 +18,7 @@ shared state; the board push happens outside the lock.
 """
 import math
 import random
+import sys
 import threading
 import time
 
@@ -69,6 +70,7 @@ class EffectEngine:
         self._key_states = {}      # led_idx -> cooldown/toggle indicator state
         self._fps = 60
         self._base_dirty = True
+        self.push_failures = 0     # consecutive failed set_colors calls
 
     # -- configuration -----------------------------------------------------
 
@@ -199,7 +201,11 @@ class EffectEngine:
     # -- lifecycle ---------------------------------------------------------
 
     def start(self):
-        if self._running.is_set():
+        # A dead thread with the running flag still set used to mean the engine
+        # never painted again, and every later start() returned here thinking
+        # all was well. Check the thread itself, not just the flag.
+        thread = getattr(self, "_thread", None)
+        if self._running.is_set() and thread is not None and thread.is_alive():
             return
         self._running.set()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -352,6 +358,18 @@ class EffectEngine:
     KEEPALIVE_SECONDS = 1.0
 
     def _run(self):
+        try:
+            self._render_loop()
+        except Exception:
+            # A crash here used to take the whole engine down in silence: every
+            # thread still looked alive, nothing was painted again, and no clue
+            # was left behind.
+            import traceback
+            print("[modeshift] the effect engine crashed:", file=sys.stderr)
+            traceback.print_exc()
+            self._running.clear()
+
+    def _render_loop(self):
         last_push = 0.0
         while self._running.is_set():
             frame_dt = 1.0 / self._fps
@@ -365,9 +383,29 @@ class EffectEngine:
                     if self._key_states:
                         self._render_key_states(frame, now)
             if frame is not None:
-                try:
-                    self.device.set_colors(frame, fast=True)
+                if self._push(frame):
                     last_push = now
-                except Exception:
-                    pass
             time.sleep(frame_dt)
+
+    def _push(self, frame) -> bool:
+        """Send one frame. Returns whether it landed.
+
+        Failures used to be swallowed whole, which meant the engine could spend
+        an entire session failing to paint the keyboard at 60 frames a second
+        without a word in the log. Now the first failure is reported, repeats
+        are counted rather than spammed, and the watcher is told so it can
+        reconnect instead of looping on a connection that is not working."""
+        try:
+            self.device.set_colors(frame, fast=True)
+        except Exception as e:
+            self.push_failures += 1
+            if self.push_failures == 1 or self.push_failures % 300 == 0:
+                print(f"[modeshift] could not send colours to the keyboard "
+                      f"({type(e).__name__}: {e}); "
+                      f"{self.push_failures} failure(s) so far", file=sys.stderr)
+            return False
+        if self.push_failures:
+            print(f"[modeshift] colours are reaching the keyboard again after "
+                  f"{self.push_failures} failure(s)", file=sys.stderr)
+            self.push_failures = 0
+        return True
