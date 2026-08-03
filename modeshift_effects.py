@@ -369,10 +369,17 @@ class EffectEngine:
             traceback.print_exc()
             self._running.clear()
 
+    # Once pushes are clearly failing there is no point composing and sending
+    # sixty frames a second into nothing. Slow right down until it recovers.
+    FAILURE_SLOWDOWN_AFTER = 30       # consecutive failures
+    FAILURE_FRAME_SECONDS = 1.0       # then try only once a second
+
     def _render_loop(self):
         last_push = 0.0
         while self._running.is_set():
-            frame_dt = 1.0 / self._fps
+            frame_dt = (self.FAILURE_FRAME_SECONDS
+                        if self.push_failures >= self.FAILURE_SLOWDOWN_AFTER
+                        else 1.0 / self._fps)
             now = time.monotonic()
             frame = self._compose(now)
             if frame is None and now - last_push >= self.KEEPALIVE_SECONDS:

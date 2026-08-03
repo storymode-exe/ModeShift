@@ -78,6 +78,8 @@ class Watcher:
         self._connected_at = 0.0           # when we last (re)connected
         self._last_apply_at = 0.0          # last successful apply_profile
         self._last_nag_at = 0.0            # rate limit for the idle warning
+        self._reconnect_failures = 0       # consecutive failed reconnects
+        self._retry_not_before = 0.0       # backoff deadline
         # Seed with the current command-file contents so a stale command from a
         # previous session doesn't fire on startup. We never start paused: the
         # editor previews through us now rather than pausing us, so a leftover
@@ -221,6 +223,8 @@ class Watcher:
         wrong slot, which looks exactly like the keyboard being stuck on its
         firmware lighting."""
         now = time.monotonic()
+        if now < self._retry_not_before:
+            return                           # backing off, leave it alone
 
         # The engine paints on its own thread. If its frames have been bouncing
         # for a while, the connection is no good regardless of what the checks
@@ -281,15 +285,38 @@ class Watcher:
                 if self._reactive is not None:
                     self._reactive.mark_dirty()
 
+    # Reconnect backoff. Retrying every ten seconds forever burns a core and
+    # fills the log when OpenRGB is simply not available, which is the normal
+    # state of affairs if the keyboard is unplugged or OpenRGB is closed.
+    RECONNECT_BACKOFF = (5, 10, 30, 60, 120, 300)
+
     def _reconnect(self, why: str):
+        now = time.monotonic()
+        if now < self._retry_not_before:
+            return                           # still waiting out the backoff
+
         print(f"[modeshift] reconnecting: {why}", file=sys.stderr)
         try:
             self._connect()
         except Exception as e:
-            print(f"[modeshift] reconnect failed, will retry: {e}", file=sys.stderr)
+            i = min(self._reconnect_failures, len(self.RECONNECT_BACKOFF) - 1)
+            wait = self.RECONNECT_BACKOFF[i]
+            self._reconnect_failures += 1
+            self._retry_not_before = now + wait
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            print(f"[modeshift] reconnect failed ({detail}), "
+                  f"next try in {wait}s", file=sys.stderr)
             return
+
+        if self._reconnect_failures:
+            print(f"[modeshift] reconnected after {self._reconnect_failures} "
+                  f"failed attempt(s)", file=sys.stderr)
+        self._reconnect_failures = 0
+        self._retry_not_before = 0.0
         self._last_applied = "__unset__"     # force a repaint on the next tick
         self._mode_override = None
+        if self._reactive is not None:
+            self._reactive.push_failures = 0
         self.refresh_menu()                  # the profile set may have changed
         print(f"[modeshift] now driving {self.device_name!r}", file=sys.stderr)
 

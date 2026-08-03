@@ -2,6 +2,21 @@
 
 All notable changes to ModeShift are documented here.
 
+## v1.5.3
+
+### Fixed
+- **A watcher that could not reach OpenRGB burned a whole CPU core** and filled
+  the log, indefinitely. The render loop kept composing and sending sixty frames
+  a second into a dead connection, and the watcher retried connecting every ten
+  seconds forever. One session was measured consuming 97 minutes of CPU time in
+  96 minutes of wall clock time. The engine now drops to one attempt a second
+  once frames are clearly not landing, and reconnects back off through 5, 10,
+  30, 60, 120 and 300 second intervals instead of hammering. Both report
+  recovery when the connection returns.
+- Reconnect failures now log the exception type even when the exception carries
+  no message, which several from the OpenRGB library do. Previously the log read
+  `reconnect failed, will retry:` with nothing after the colon.
+
 ## v1.5.2
 
 ### Fixed
